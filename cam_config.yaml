@@ -1,0 +1,65 @@
+# =====================================================
+# Head camera configuration
+# =====================================================
+# camera topic
+head_camera:
+  # camera config
+
+  # Set to true to enable this camera, false to disable
+  enable: true
+  # Port to publish camera stream, e.g. zmq tcp://*:55555.  image_client.py should connect to the same port
+  port : 55555
+  # Type of camera:
+  #   - "opencv"    → opencv driver
+  #   - "realsense" → pyrealsense2 driver
+  #   - "uvc"       → pyuvc driver
+  type: uvc
+
+  # Image Format
+  # image resolution: [height, width]
+  image_shape: [480, 1280]
+  # frame per second
+  fps: 60
+
+  # Camera identifiers (choose one or more):
+  #   - video_id: X        → /dev/videoX  (e.g. 0 → /dev/video0)
+  #   - serial_number: Y   → camera's hardware serial (e.g. 141722079879)
+  #   - physical_path: Z   → sysfs physical USB path (e.g. /sys/devices/pci0000:00/.../1-11.2:1.0)
+  #
+  # Identifier priority:
+  #   physical_path > serial_number > video_id
+  #   if an identifier is not used, set it to null. The system will resolve the camera by priority.
+  #
+  # Notes:
+  #   - type "realsense": supports serial_number only (but a RealSense can also be used as opencv/uvc if desired)
+  #   - type "opencv":    supports video_id, serial_number, physical_path
+  #   - type "uvc":       supports video_id, serial_number, physical_path
+  video_id: 0
+  serial_number: 01.00.00
+  physical_path: /sys/devices/pci0000:00/0000:00:14.0/usb1/1-3/1-3.3/1-3.3:1.0
+
+# =====================================================
+# Left wrist camera configuration
+# =====================================================
+left_wrist_camera:
+  enable: True
+  port : 55556
+  type: uvc
+  image_shape: [480, 640]
+  fps: 60
+  video_id: 2
+  serial_number: 200901010001
+  physical_path: null
+
+# =====================================================
+# Right wrist camera configuration
+# =====================================================
+right_wrist_camera:
+  enable: True
+  port : 55557
+  type: opencv
+  image_shape: [480, 640]
+  fps: 60
+  video_id: 4
+  serial_number: 200901010002
+  physical_path: null

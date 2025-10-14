@@ -1,0 +1,31 @@
+[project]
+name = "teleimager"
+version = "0.9.0"
+description = """
+TeleImager — A flexible multi-camera image streaming service for teleoperation,
+supporting ZeroMQ-based network transmission and local shared memory for low-latency image access.
+"""
+authors = [
+    { name = "silencht", email = "silencht@qq.com" }
+]
+license = "MIT"
+readme = "README.md"
+requires-python = "==3.10"
+
+[project.urls]
+Homepage = "https://github.com/silencht/teleimager"
+
+[tool.setuptools]
+packages = ["teleimager"]
+
+[project.dependencies]
+logging_mp
+opencv-python
+numpy
+pyrealsense2
+uvc
+pyyaml
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
