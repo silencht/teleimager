@@ -1,6 +1,10 @@
 import cv2
 import time
 import logging_mp
+import os
+import sys
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 import messaging
 logger_mp = logging_mp.get_logger(__name__, level=logging_mp.DEBUG)
 
@@ -14,7 +18,6 @@ class ImageClient:
             right_wrist_port: Port for subscribe right wrist camera
             requset_port:     Port for request camera configuration
         """
-        self._running = True
         self._host = host
         self._head_port = head_port
         self._left_wrist_port = left_wrist_port
@@ -27,18 +30,18 @@ class ImageClient:
 
         # Camera configuration
         self._aspect_ratio_threshold = 2.0 # If the aspect ratio exceeds this value, it is considered binocular. ohterwise, monocular.
-        self._binocular = None
-        self._has_head_cam = None
-        self._head_cam_shape = None
-        self._head_cam_server_fps = None
+        self._binocular = True             # default binocular
+        self._has_head_cam = True          # default always enable head camera
+        self._head_cam_shape = (480, 1280)
+        self._head_cam_server_fps = 30.0
 
-        self._has_left_wrist_cam = None
-        self._left_wrist_cam_shape = None
-        self._left_wrist_cam_server_fps = None
+        self._has_left_wrist_cam = False
+        self._left_wrist_cam_shape = (480, 640)
+        self._left_wrist_cam_server_fps = 30.0
 
-        self._has_right_wrist_cam = None
-        self._right_wrist_cam_shape = None
-        self._right_wrist_cam_server_fps = None
+        self._has_right_wrist_cam = False
+        self._right_wrist_cam_shape = (480, 640)
+        self._right_wrist_cam_server_fps = 30.0
         # request camera configuration
         self.camconfig = self._request_camconfig()
         if self.camconfig is not None:
@@ -62,8 +65,8 @@ class ImageClient:
                 self._right_wrist_cam_server_fps = self.camconfig['right_wrist_camera']['fps'] # fps set on the server side
                 self._subscriber_manager.subscribe(self._host, self._right_wrist_port)
         else:
-            logger_mp.error("Failed to get camera configuration from server.")
-            self._running = False
+            logger_mp.error("Failed to get camera configuration from server. Please check image server whether it is running.")
+
         # Wait for the subscriber to initialize
         time.sleep(0.005)
 
@@ -88,9 +91,6 @@ class ImageClient:
         """Get the latest head camera frame, and the current receiving FPS."""
         if self._has_head_cam:
             return self._subscriber_manager.subscribe(self._host, self._head_port)
-        else:
-            logger_mp.warning("Head camera is not enabled.")
-            return None, 0.0
 
     def has_left_wrist_cam(self):
         return self._has_left_wrist_cam

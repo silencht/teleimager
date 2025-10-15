@@ -412,12 +412,9 @@ class SubscriberManager:
         """
         if not self._running:
             raise RuntimeError("SubscriberManager is closed.")
-        try:
-            subscriber_thread = self._get_subscriber_thread(host, port)
-            return subscriber_thread.recv(), subscriber_thread.get_fps()
-        except Exception as e:
-            logger_mp.error(f"Failed to subscribe to {host}:{port}: {e}")
-            return None, 0.0
+
+        subscriber_thread = self._get_subscriber_thread(host, port)
+        return subscriber_thread.recv(), subscriber_thread.get_fps()
 
     def close(self) -> None:
         """Close all subscribers."""
