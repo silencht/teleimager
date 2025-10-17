@@ -3,7 +3,6 @@ import argparse
 import glob
 import cv2
 import numpy as np
-import pyrealsense2 as rs
 import uvc
 import yaml
 import time
@@ -121,6 +120,21 @@ class CameraFinder:
         return ports
 
     def _list_realsense_serial_numbers(self):
+        try:
+            import pyrealsense2 as rs
+        except ImportError:
+            raise RuntimeError(
+                "[RealSenseCamera] pyrealsense2 is not installed. Please install it to use RealSense cameras.\n"
+                "You can install it manually with:\n"
+                "    cd ~\n"
+                "    git clone https://github.com/IntelRealSense/librealsense.git\n"
+                "    cd librealsense\n"
+                "    git checkout v2.50.0\n"
+                "    mkdir build && cd build\n"
+                "    cmake .. -DBUILD_PYTHON_BINDINGS=ON -DPYTHON_EXECUTABLE=$(which python3)\n"
+                "    make -j$(nproc)\n"
+                "    sudo make install\n"
+            )
         ctx = rs.context()
         devices = ctx.query_devices()
         serials = []
@@ -297,6 +311,22 @@ class RealSenseCamera(BaseCamera):
         self.serial_number = serial_number
         self.enable_depth = enable_depth
         self._latest_depth = None
+
+        try:
+            import pyrealsense2 as rs
+        except ImportError:
+            raise RuntimeError(
+                "[RealSenseCamera] pyrealsense2 is not installed. Please install it to use RealSense cameras.\n"
+                "You can install it manually with:\n"
+                "    cd ~\n"
+                "    git clone https://github.com/IntelRealSense/librealsense.git\n"
+                "    cd librealsense\n"
+                "    git checkout v2.50.0\n"
+                "    mkdir build && cd build\n"
+                "    cmake .. -DBUILD_PYTHON_BINDINGS=ON -DPYTHON_EXECUTABLE=$(which python3)\n"
+                "    make -j$(nproc)\n"
+                "    sudo make install\n"
+            )
 
         align_to = rs.stream.color
         self.align = rs.align(align_to)
@@ -570,6 +600,26 @@ def signal_handler(signum, frame):
 
 
 if __name__ == "__main__":
+    logger_mp.info(
+        "\n"
+        "====================== Image Server Startup Guide ======================\n"
+        "Please first read this repo’s README.md to learn how to configure and use the teleimager.\n"
+        "To discover connected cameras, run the following command:\n"
+        "\n"
+        "    sudo $(which python) image_server.py --cf\n"
+        "\n"
+        "This will list all detected cameras and their details (video paths, serial numbers and physical path etc.).\n"
+        "Use that information to fill in your 'cam_config.yaml' file.\n"
+        "\n"
+        "Once configured, you can start the image server with:\n"
+        "\n"
+        "    sudo $(which python) image_server.py\n"
+        "\n"
+        "Note:\n"
+        " - The '--cf' flag means 'camera find'.\n"
+        " - Using 'sudo' ensures the underlying UVC library has sufficient permissions to access camera devices.\n"
+        "=========================================================================="
+    )
     # graceful shutdown handling
     stop_event = threading.Event()
     signal.signal(signal.SIGINT, signal_handler)
@@ -587,7 +637,7 @@ if __name__ == "__main__":
 
     # Load config file, start image server
     try:
-        with open("cam_config.yaml", "r") as f:
+        with open("../../cam_config.yaml", "r") as f:
             cam_config = yaml.safe_load(f)
     except Exception as e:
         logger_mp.error(f"Failed to load configuration file: {e}")

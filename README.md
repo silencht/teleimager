@@ -29,6 +29,7 @@ All user-callable functions are listed below the `# public api` comment in the c
     ```
 3. Install the required packages:
     ```bash
+    sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev 
     pip install -e .
     ```
 

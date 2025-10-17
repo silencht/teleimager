@@ -121,7 +121,7 @@ class ImageClient:
 if __name__ == "__main__":
     # Example usage with three camera streams
     client = ImageClient(
-        host='127.0.0.1',  # Change to '127.0.0.1' for local test
+        host='192.168.123.164',  # Change to '127.0.0.1' for local test
         head_port=55555,
         left_wrist_port=55556,
         right_wrist_port=55557,
