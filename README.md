@@ -17,6 +17,11 @@ All user-callable functions are listed below the `# public api` comment in the c
 - 🚀 Efficient frame handling using a triple ring buffer.
 
 ### 1.1 📥 Environment Setup
+
+You can set up TeleImager using either a Conda environment or the system (base) environment.
+Both methods work — choose whichever fits your workflow better.
+
+#### 1.1.1 Conda Environment
 1. Clone the repository:
     ```bash
     git clone https://github.com/silencht/teleimager.git
@@ -32,6 +37,18 @@ All user-callable functions are listed below the `# public api` comment in the c
     sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev 
     pip install -e .
     ```
+#### 1.1.2 Base Environment
+1. Clone the repository:
+    ```bash
+    git clone https://github.com/silencht/teleimager.git
+    cd teleimager
+    ```
+2. Install the required packages:
+   ```bash
+    sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev
+    sudo pip install --upgrade pip setuptools wheel
+    pip install .
+   ```
 
 ### 1.2 🔍 Finding connected cameras
 
@@ -226,4 +243,6 @@ if __name__ == "__main__":
     )
 #...
 ```
+> Remember to have the **opencv-python** library installed in your environment.
+
 Then you should see the video streams from the cameras in separate OpenCV windows.

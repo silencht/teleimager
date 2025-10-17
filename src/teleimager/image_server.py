@@ -6,12 +6,20 @@ import numpy as np
 import uvc
 import yaml
 import time
-import messaging
+import src.teleimager.messaging as messaging
 import threading
 import signal
+import functools
 import subprocess
 import logging_mp
 logger_mp = logging_mp.get_logger(__name__, level=logging_mp.INFO)
+
+# Resolve the absolute path of cam_config.yaml relative to this script
+CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),  # directory of this script
+    "..", "..", "cam_config.yaml"                # go up two levels
+)
+CONFIG_PATH = os.path.normpath(CONFIG_PATH)
 
 # ========================================================
 # camera and camera discovery
@@ -456,6 +464,7 @@ class OpenCVCamera(BaseCamera):
 
     def release(self):
         self.cap.release()
+        self.cap = None
         logger_mp.info(f"[OpenCVCamera] Released {self.video_path}")
 
 # ========================================================
@@ -464,9 +473,9 @@ class OpenCVCamera(BaseCamera):
 class ImageServer:
     def __init__(self, cam_config, camera_finder_verbose=False):
         self._cam_config = cam_config
+        self._stop_event = threading.Event()
         self._cameras = {}
         self._cam_finder = CameraFinder(camera_finder_verbose)
-        self._running = True
         self._responser = messaging.Responser(self._cam_config)
         self._publisher_manager = messaging.PublisherManager.get_instance()
         self._publisher_threads = []  # keep references for graceful join
@@ -547,19 +556,22 @@ class ImageServer:
 
         logger_mp.info("[Image Server] Image server has started, waiting for client connections...")
 
-    def _image_pub(self, camera):
+    def _image_pub(self, camera, stop_event):
         interval = 1.0 / camera.get_fps()
         next_frame_time = time.monotonic()
 
-        while self._running:
+        while not stop_event.is_set():
             try:
                 frame = camera.get_frame()
                 if frame:
                     self._publisher_manager.publish(frame, camera.get_port())
                 else:
                     logger_mp.warning(f"Camera {camera} returned no frame.")
+                    stop_event.set()
+                    break
             except Exception as e:
                 logger_mp.error(f"Failed to publish frame from camera {camera}: {e}")
+                stop_event.set()
                 break
 
             next_frame_time += interval
@@ -574,12 +586,17 @@ class ImageServer:
     # --------------------------------------------------------
     def start(self):
         for camera in self._cameras.values():
-            t = threading.Thread(target=self._image_pub, args=(camera,), daemon=True)
+            t = threading.Thread(target=self._image_pub, args=(camera, self._stop_event), daemon=True)
             t.start()
             self._publisher_threads.append(t)
 
+    def wait(self):
+        self._stop_event.wait()
+
+    def set_stop_event(self):
+        self._stop_event.set()
+
     def stop(self):
-        self._running = False
         self._responser.stop()
         for t in self._publisher_threads:
             if t.is_alive():
@@ -594,9 +611,9 @@ class ImageServer:
 # ========================================================
 # utility functions
 # ========================================================
-def signal_handler(signum, frame):
+def signal_handler(server, signum, frame):
     logger_mp.info(f"[Image Server] Received signal {signum}, initiating graceful shutdown...")
-    stop_event.set()
+    server.set_stop_event()
 
 
 if __name__ == "__main__":
@@ -620,10 +637,6 @@ if __name__ == "__main__":
         " - Using 'sudo' ensures the underlying UVC library has sufficient permissions to access camera devices.\n"
         "=========================================================================="
     )
-    # graceful shutdown handling
-    stop_event = threading.Event()
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
 
     # command line args
     parser = argparse.ArgumentParser()
@@ -637,19 +650,24 @@ if __name__ == "__main__":
 
     # Load config file, start image server
     try:
-        with open("../../cam_config.yaml", "r") as f:
+        with open(CONFIG_PATH, "r") as f:
             cam_config = yaml.safe_load(f)
     except Exception as e:
-        logger_mp.error(f"Failed to load configuration file: {e}")
+        logger_mp.error(f"Failed to load configuration file at {CONFIG_PATH}: {e}")
         exit(1)
 
     # start image server
     server = ImageServer(cam_config, camera_finder_verbose=False)
     server.start()
 
+    # graceful shutdown handling
+    signal.signal(signal.SIGINT, functools.partial(signal_handler, server))
+    signal.signal(signal.SIGTERM, functools.partial(signal_handler, server))
+
     try:
-        while not stop_event.is_set():
-            stop_event.wait(timeout=0.5)
+        logger_mp.info("[Image Server] Running... Press Ctrl+C to exit.")
+        server.wait()
+    except KeyboardInterrupt:
+        logger_mp.info("[Image Server] KeyboardInterrupt received.")
     finally:
-        logger_mp.info("[Image Server] Stopping server...")
         server.stop()
