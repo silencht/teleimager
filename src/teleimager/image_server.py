@@ -6,7 +6,7 @@ import numpy as np
 import uvc
 import yaml
 import time
-import src.teleimager.messaging as messaging
+import messaging
 import threading
 import signal
 import functools
@@ -16,8 +16,8 @@ logger_mp = logging_mp.get_logger(__name__, level=logging_mp.INFO)
 
 # Resolve the absolute path of cam_config.yaml relative to this script
 CONFIG_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),  # directory of this script
-    "..", "..", "cam_config.yaml"                # go up two levels
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "cam_config.yaml"                
 )
 CONFIG_PATH = os.path.normpath(CONFIG_PATH)
 
@@ -33,7 +33,7 @@ class CameraFinder:
     dev_info: extra info from uvc
     sn: serial number of the camera
     """
-    def __init__(self, verbose=False):
+    def __init__(self, realsense_enable=False, verbose=False):
         self.verbose = verbose
         # uvc
         self._reload_uvc_driver()
@@ -42,9 +42,14 @@ class CameraFinder:
         # all video devices
         self.video_paths = self._list_video_paths()
         # realsense
-        self.rs_serial_numbers = self._list_realsense_serial_numbers()
-        self.rs_video_paths = self._list_realsense_video_paths()
-        self.rs_rgb_video_paths = [p for p in self.rs_video_paths if self._is_like_rgb(p)]
+        if realsense_enable:
+            self.rs_serial_numbers = self._list_realsense_serial_numbers()
+            self.rs_video_paths = self._list_realsense_video_paths()
+            self.rs_rgb_video_paths = [p for p in self.rs_video_paths if self._is_like_rgb(p)]
+        else:
+            self.rs_serial_numbers = []
+            self.rs_video_paths = []
+            self.rs_rgb_video_paths = []
         # rgb & uvc
         self.uvc_rgb_video_paths = self._list_uvc_rgb_video_paths()
         self.uvc_rgb_video_ids = [int(v.replace("/dev/video", "")) for v in self.uvc_rgb_video_paths]
@@ -293,6 +298,12 @@ class BaseCamera:
         self.fps = fps
         self.port = port
 
+    def __str__(self):
+        raise NotImplementedError
+    
+    def __repr__(self):
+        return self.__str__()
+
     def get_frame(self):
         """Return a color image frame as bytes"""
         raise NotImplementedError
@@ -335,29 +346,39 @@ class RealSenseCamera(BaseCamera):
                 "    make -j$(nproc)\n"
                 "    sudo make install\n"
             )
+        try:
+            align_to = rs.stream.color
+            self.align = rs.align(align_to)
+            self.pipeline = rs.pipeline()
+            config = rs.config()
+            config.enable_device(self.serial_number)
 
-        align_to = rs.stream.color
-        self.align = rs.align(align_to)
-        self.pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_device(self.serial_number)
+            config.enable_stream(rs.stream.color, self.img_shape[1], self.img_shape[0], rs.format.bgr8, self.fps)
+            if self.enable_depth:
+                config.enable_stream(rs.stream.depth, self.img_shape[1], self.img_shape[0], rs.format.z16, self.fps)
 
-        config.enable_stream(rs.stream.color, self.img_shape[1], self.img_shape[0], rs.format.bgr8, self.fps)
-        if self.enable_depth:
-            config.enable_stream(rs.stream.depth, self.img_shape[1], self.img_shape[0], rs.format.z16, self.fps)
+            profile = self.pipeline.start(config)
+            self._device = profile.get_device()
+            if self._device is None:
+                logger_mp.error('[RealSenseCamera] pipe_profile.get_device() is None .')
+            if self.enable_depth:
+                assert self._device is not None
+                depth_sensor = self._device.first_depth_sensor()
+                self.g_depth_scale = depth_sensor.get_depth_scale()
 
-        profile = self.pipeline.start(config)
-        self._device = profile.get_device()
-        if self._device is None:
-            logger_mp.error('[RealSenseCamera] pipe_profile.get_device() is None .')
-        if self.enable_depth:
-            assert self._device is not None
-            depth_sensor = self._device.first_depth_sensor()
-            self.g_depth_scale = depth_sensor.get_depth_scale()
+            self.intrinsics = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
+            logger_mp.info(f"[RealSenseCamera] {self.serial_number} initialized with "
+                        f"{self.img_shape[0]} x {self.img_shape[1]} @ {self.fps}, on port: {self.port}")
+        except Exception as e:
+            if self.pipeline:
+                try:
+                    self.pipeline.stop()
+                except:
+                    pass
+            raise RuntimeError(f"[RealSenseCamera] Failed to initialize RealSense camera {self.serial_number}: {e}")
 
-        self.intrinsics = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
-        logger_mp.info(f"[RealSenseCamera] {self.serial_number} initialized with "
-                       f"{self.img_shape[0]} x {self.img_shape[1]} @ {self.fps}, on port: {self.port}")
+    def __str__(self):
+        return f"RealSenseCamera(SN:{self.serial_number}, port={self.port}, shape={self.img_shape}, fps={self.fps})"
 
     def get_frame(self):
         frames = self.pipeline.wait_for_frames()
@@ -395,18 +416,19 @@ class UVCCamera(BaseCamera):
         try:
             self.cap = uvc.Capture(self.uid)
         except Exception as e:
-            logger_mp.error(f"[UVCCamera] Cannot open camera {self.uid}: {e}")
             self.cap = None
-            return
+            raise RuntimeError(f"[UVCCamera] Failed to open camera {self.uid}: {e}")
 
         try:
             self.cap.frame_mode = self._choose_mode(self.cap, width=self.img_shape[1], height=self.img_shape[0], fps=self.fps)
             logger_mp.info(f"[UVCCamera] {self.uid} initialized "
                            f"with {self.img_shape[0]} x {self.img_shape[1]} @ {self.fps}  MJPG, on port: {self.port}")
         except Exception as e:
-            logger_mp.error(f"[UVCCamera] Failed to set mode for {self.uid}: {e}")
             self.cap = None
-            return
+            raise RuntimeError(f"[UVCCamera] Failed to set mode for {self.uid}: {e}")
+
+    def __str__(self):
+        return f"UVCCamera(UID:{self.uid}, port={self.port}, shape={self.img_shape}, fps={self.fps})"
 
     def _choose_mode(self, cap, width=None, height=None, fps=None):
         for m in cap.available_modes:
@@ -445,12 +467,14 @@ class OpenCVCamera(BaseCamera):
 
         # Test if the camera can read frames
         if not self._can_read_frame():
-            logger_mp.error(f"[OpenCVCamera] Camera {self.video_path} Error: Failed to initialize the camera or read frames. Exiting...")
             self.release()
+            raise RuntimeError(f"[OpenCVCamera] Camera {self.video_path} failed to initialize or read frames.")
         else:
             logger_mp.info(f"[OpenCVCamera] {self.video_path} initialized with "
                            f"{self.img_shape[0]} x {self.img_shape[1]} @ {self.fps}, on port: {self.port}")
-
+    def __str__(self):
+        return f"OpenCVCamera(path:{self.video_path}, port={self.port}, shape={self.img_shape}, fps={self.fps})"
+        
     def _can_read_frame(self):
         success, _ = self.cap.read()
         return success
@@ -471,97 +495,118 @@ class OpenCVCamera(BaseCamera):
 # image server
 # ========================================================
 class ImageServer:
-    def __init__(self, cam_config, camera_finder_verbose=False):
+    def __init__(self, cam_config, realsense_enable=False, camera_finder_verbose=False):
         self._cam_config = cam_config
+        self._realsense_enable = realsense_enable
         self._stop_event = threading.Event()
         self._cameras = {}
-        self._cam_finder = CameraFinder(camera_finder_verbose)
+        self._cam_finder = CameraFinder(realsense_enable, camera_finder_verbose)
         self._responser = messaging.Responser(self._cam_config)
         self._publisher_manager = messaging.PublisherManager.get_instance()
         self._publisher_threads = []  # keep references for graceful join
 
-        # Load cameras from self.cam_config
-        for cam_topic, cam_cfg in self._cam_config.items():
-            if not cam_cfg.get("enable", False):
-                continue
+        try:
+            # Load cameras from self.cam_config
+            for cam_topic, cam_cfg in self._cam_config.items():
+                if not cam_cfg.get("enable", False):
+                    continue
 
-            cam_type = cam_cfg["type"]
-            cam_port = cam_cfg["port"]
-            img_shape = cam_cfg["image_shape"]
-            fps = cam_cfg["fps"]
-            video_id = cam_cfg["video_id"]
-            video_path = f"/dev/video{video_id}" if video_id else None
-            physical_path = str(cam_cfg.get("physical_path")) if cam_cfg.get("physical_path") else None
-            serial_number = str(cam_cfg.get("serial_number")) if cam_cfg.get("serial_number") else None
+                cam_type = cam_cfg["type"]
+                cam_port = cam_cfg["port"]
+                img_shape = cam_cfg["image_shape"]
+                fps = cam_cfg["fps"]
+                video_id = cam_cfg["video_id"]
+                video_path = f"/dev/video{video_id}" if video_id else None
+                physical_path = str(cam_cfg.get("physical_path")) if cam_cfg.get("physical_path") else None
+                serial_number = str(cam_cfg.get("serial_number")) if cam_cfg.get("serial_number") else None
 
-            if cam_type == "opencv":
-                if physical_path:
-                    vpath = self._cam_finder.get_vpath_by_ppath(physical_path)
-                    if vpath is None:
-                        logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with physical path {physical_path}")
-                    else:
-                        self._cameras[cam_topic] = OpenCVCamera(vpath, img_shape, fps, cam_port)
+                if cam_type == "opencv":
+                    if physical_path is not None:
+                        vpath = self._cam_finder.get_vpath_by_ppath(physical_path)
+                        if vpath is None:
+                            self._cameras[cam_topic] = None
+                            logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with physical path {physical_path}")
+                        else:
+                            self._cameras[cam_topic] = OpenCVCamera(vpath, img_shape, fps, cam_port)
+                            continue
+
+                    if serial_number is not None:
+                        vpath = self._cam_finder.get_vpath_by_sn(serial_number)
+                        if vpath is None:
+                            self._cameras[cam_topic] = None
+                            logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with serial number {serial_number}")
+                        else:
+                            self._cameras[cam_topic] = OpenCVCamera(vpath, img_shape, fps, cam_port)
+                        # once you specify either `physical_path` or `serial_number`, the system will no longer fall back to searching by `video_id`.
+                        # ——— even if no camera matches the given path/serial.
                         continue
-
-                if serial_number:
-                    vpath = self._cam_finder.get_vpath_by_sn(serial_number)
-                    if vpath is None:
-                        logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with serial number {serial_number}")
-                    else:
-                        self._cameras[cam_topic] = OpenCVCamera(vpath, img_shape, fps, cam_port)
-                        continue
-                
-                if not self._cam_finder.is_vpath_exist(video_path):
-                    logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with video_id {video_id}")
-                else:
-                    self._cameras[cam_topic] = OpenCVCamera(video_path, img_shape, fps, cam_port)
                     
-
-            elif cam_type == "realsense":
-                if not self._cam_finder.is_rs_serial_exist(serial_number):
-                    logger_mp.error(f"[Image Server] Cannot find RealSenseCamera for {cam_topic} with serial number {serial_number}")
-                else:
-                    self._cameras[cam_topic] = RealSenseCamera(serial_number, img_shape, fps, cam_port)
-
-            elif cam_type == "uvc":
-                uid = None
-                if physical_path:
-                    uid = self._cam_finder.get_uid_by_ppath(physical_path)
-                    if uid is None:
-                        logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with physical path {physical_path}")
-                    else:
-                        self._cameras[cam_topic] = UVCCamera(uid, img_shape, fps, cam_port)
-                        continue
-
-                if serial_number:
-                    uid = self._cam_finder.get_uid_by_sn(serial_number)
-                    if uid is None:
-                        logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with serial number {serial_number}")
-                    else:
-                        self._cameras[cam_topic] = UVCCamera(uid, img_shape, fps, cam_port)
-                        continue
-
-                if video_id:
                     if not self._cam_finder.is_vpath_exist(video_path):
-                        logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with video_id {video_id}")
+                        self._cameras[cam_topic] = None
+                        logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with video_id {video_id}")
                     else:
-                        uid = self._cam_finder.get_uid_by_vpath(video_path)
+                        self._cameras[cam_topic] = OpenCVCamera(video_path, img_shape, fps, cam_port)
+                        
+
+                elif cam_type == "realsense":
+                    if not self._realsense_enable:
+                        self._cameras[cam_topic] = None
+                        logger_mp.error(f"[Image Server] Please start image server with the '--rs' flag to support Realsense {cam_topic}.")
+                    elif not self._cam_finder.is_rs_serial_exist(serial_number):
+                        self._cameras[cam_topic] = None
+                        logger_mp.error(f"[Image Server] Cannot find RealSenseCamera for {cam_topic}")
+                    else:
+                        self._cameras[cam_topic] = RealSenseCamera(serial_number, img_shape, fps, cam_port)
+
+                elif cam_type == "uvc":
+                    uid = None
+                    if physical_path is not None:
+                        uid = self._cam_finder.get_uid_by_ppath(physical_path)
                         if uid is None:
-                            logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with video_id {video_id}")
+                            self._cameras[cam_topic] = None
+                            logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with physical path {physical_path}")
                         else:
                             self._cameras[cam_topic] = UVCCamera(uid, img_shape, fps, cam_port)
-            else:
-                logger_mp.error(f"[Image Server] Unknown camera type {cam_type} for {cam_topic}, skipping...")
-                continue
+                            continue
+
+                    if serial_number is not None:
+                        uid = self._cam_finder.get_uid_by_sn(serial_number)
+                        if uid is None:
+                            self._cameras[cam_topic] = None
+                            logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with serial number {serial_number}")
+                        else:
+                            self._cameras[cam_topic] = UVCCamera(uid, img_shape, fps, cam_port)
+                        # once you specify either `physical_path` or `serial_number`, the system will no longer fall back to searching by `video_id`.
+                        # ——— even if no camera matches the given path/serial.
+                        continue
+
+                    if video_id is not None:
+                        if not self._cam_finder.is_vpath_exist(video_path):
+                            self._cameras[cam_topic] = None
+                            logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with video_id {video_id}")
+                        else:
+                            uid = self._cam_finder.get_uid_by_vpath(video_path)
+                            if uid is None:
+                                self._cameras[cam_topic] = None
+                                logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with uid from video_id {video_id}")
+                            else:
+                                self._cameras[cam_topic] = UVCCamera(uid, img_shape, fps, cam_port)
+                else:
+                    logger_mp.error(f"[Image Server] Unknown camera type {cam_type} for {cam_topic}, skipping...")
+                    continue
+        except Exception as e:
+            logger_mp.error(f"[Image Server] Initialization failed: {e}")
+            self._clean_up()
+            raise
 
         logger_mp.info("[Image Server] Image server has started, waiting for client connections...")
+ 
+    def _image_pub(self, camera_topic_name, camera, stop_event):
+        try:
+            interval = 1.0 / camera.get_fps()
+            next_frame_time = time.monotonic()
 
-    def _image_pub(self, camera, stop_event):
-        interval = 1.0 / camera.get_fps()
-        next_frame_time = time.monotonic()
-
-        while not stop_event.is_set():
-            try:
+            while not stop_event.is_set():
                 frame = camera.get_frame()
                 if frame:
                     self._publisher_manager.publish(frame, camera.get_port())
@@ -569,34 +614,18 @@ class ImageServer:
                     logger_mp.warning(f"Camera {camera} returned no frame.")
                     stop_event.set()
                     break
-            except Exception as e:
-                logger_mp.error(f"Failed to publish frame from camera {camera}: {e}")
-                stop_event.set()
-                break
 
-            next_frame_time += interval
-            sleep_time = next_frame_time - time.monotonic()
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-            else:
-                next_frame_time = time.monotonic()
+                next_frame_time += interval
+                sleep_time = next_frame_time - time.monotonic()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    next_frame_time = time.monotonic()
+        except Exception as e:
+            logger_mp.error(f"Failed to publish frame from {camera_topic_name} camera.")
+            stop_event.set()
 
-    # --------------------------------------------------------
-    # public api
-    # --------------------------------------------------------
-    def start(self):
-        for camera in self._cameras.values():
-            t = threading.Thread(target=self._image_pub, args=(camera, self._stop_event), daemon=True)
-            t.start()
-            self._publisher_threads.append(t)
-
-    def wait(self):
-        self._stop_event.wait()
-
-    def set_stop_event(self):
-        self._stop_event.set()
-
-    def stop(self):
+    def _clean_up(self):
         self._responser.stop()
         for t in self._publisher_threads:
             if t.is_alive():
@@ -604,48 +633,65 @@ class ImageServer:
         self._publisher_threads.clear()
         
         for cam in self._cameras.values():
-            cam.release()
+            if cam:
+                cam.release()
         self._publisher_manager.close()
         logger_mp.info("[Image Server] Shutdown complete.")
+
+    # --------------------------------------------------------
+    # public api
+    # --------------------------------------------------------
+    def start(self):
+        for camera_topic_name, camera in self._cameras.items():
+            t = threading.Thread(target=self._image_pub, args=(camera_topic_name, camera, self._stop_event), daemon=True)
+            t.start()
+            self._publisher_threads.append(t)
+
+    def wait(self):
+        self._stop_event.wait()
+        self._clean_up()
+
+    def stop(self):
+        self._stop_event.set()
 
 # ========================================================
 # utility functions
 # ========================================================
 def signal_handler(server, signum, frame):
     logger_mp.info(f"[Image Server] Received signal {signum}, initiating graceful shutdown...")
-    server.set_stop_event()
+    server.stop()
 
 
 if __name__ == "__main__":
     logger_mp.info(
-        "\n"
-        "====================== Image Server Startup Guide ======================\n"
-        "Please first read this repo’s README.md to learn how to configure and use the teleimager.\n"
+        "\n====================== Image Server Startup Guide ======================\n"
+        "Please first read this repo's README.md to learn how to configure and use the teleimager.\n"
         "To discover connected cameras, run the following command:\n"
         "\n"
         "    sudo $(which python) image_server.py --cf\n"
         "\n"
+        "The '--cf' flag means 'camera find'.\n"
         "This will list all detected cameras and their details (video paths, serial numbers and physical path etc.).\n"
         "Use that information to fill in your 'cam_config.yaml' file.\n"
-        "\n"
         "Once configured, you can start the image server with:\n"
         "\n"
         "    sudo $(which python) image_server.py\n"
         "\n"
         "Note:\n"
-        " - The '--cf' flag means 'camera find'.\n"
-        " - Using 'sudo' ensures the underlying UVC library has sufficient permissions to access camera devices.\n"
+        " - If you have RealSense cameras, add the '--rs' flag to enable RealSense support.\n"
+        " - Make sure you have proper permissions to access the camera devices (e.g., run with sudo or set udev rules).\n"
         "=========================================================================="
     )
 
     # command line args
     parser = argparse.ArgumentParser()
     parser.add_argument('--cf', action = 'store_true', help = 'Enable camera found mode, print all connected cameras info')
+    parser.add_argument('--rs', action = 'store_true', help = 'Enable RealSense camera mode. Otherwise only find UVC/OpenCV cameras.')
     args = parser.parse_args()
 
     # if enable camera finder mode, just print cameras info and exit
     if args.cf:
-        CameraFinder(verbose=True)
+        CameraFinder(realsense_enable=args.rs, verbose=True)
         exit(0)
 
     # Load config file, start image server
@@ -657,17 +703,12 @@ if __name__ == "__main__":
         exit(1)
 
     # start image server
-    server = ImageServer(cam_config, camera_finder_verbose=False)
+    server = ImageServer(cam_config, realsense_enable=args.rs, camera_finder_verbose=False)
     server.start()
 
     # graceful shutdown handling
     signal.signal(signal.SIGINT, functools.partial(signal_handler, server))
     signal.signal(signal.SIGTERM, functools.partial(signal_handler, server))
 
-    try:
-        logger_mp.info("[Image Server] Running... Press Ctrl+C to exit.")
-        server.wait()
-    except KeyboardInterrupt:
-        logger_mp.info("[Image Server] KeyboardInterrupt received.")
-    finally:
-        server.stop()
+    logger_mp.info("[Image Server] Running... Press Ctrl+C to exit.")
+    server.wait()

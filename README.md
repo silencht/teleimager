@@ -129,6 +129,17 @@ You should see output similar to the following, which lists all detected UVC cam
 10:24:36:714374 INFO     =========================== Camera Discovery End ================================
 ```
 
+If there exists Intel RealSense cameras, you will also see the RealSense camera discovery results like below:
+
+```bash
+11:30:49:303683 INFO     ----------------------- Realsense Cameras ----------------------------------
+11:30:49:303699 INFO     RealSense serial numbers: ['141722079879']
+11:30:49:303712 INFO     RealSense video paths:
+                         ['/dev/video4', '/dev/video5', '/dev/video6',
+                          '/dev/video7', '/dev/video8', '/dev/video9']  
+11:30:49:303724 INFO     RealSense RGB-like video paths: ['/dev/video6', '/dev/video8']
+```
+
 ### 1.3 📡 Starting the Image Server
 According to the camera discovery results up, you can fill `cam_config.yaml` with the results. Here is an example configuration file,
 
@@ -174,13 +185,15 @@ head_camera:
   #   - type "opencv":    supports video_id, serial_number, physical_path
   #   - type "uvc":       supports video_id, serial_number, physical_path
 
-  # If camera's serial_numbers is unique, you could just use serial_number to identify them. Unfortunately,
-  # some (low-cost) cameras may have the same serial_number. In this case, you could use physical_path to identify them.
-  # So, if you are sure that camera would always be plugged into the same USB port, you could use physical_path.
-  # physical_path is the most robust way to identify a camera, but it is not flexible: 
-  # if you change camera to plug into another USB port, then you need to change the physical_path in the config file.
-  # Finally, video_id is the most fragile way to identify a camera, because it may change when camera plug in order changes.
-  # But if you just want to use video_id, make sure to set physical_path and serial_number to null.
+  # - If camera's serial_numbers is unique, you could just use serial_number to identify them. Unfortunately,
+  #   some (low-cost) cameras may have the same serial_number. In this case, you could use physical_path to identify them.
+  # - So, if you are sure that camera would always be plugged into the same USB port, you could use physical_path.
+  #   physical_path is the most robust way to identify a camera, but it is not flexible: 
+  #   if you change camera to plug into another USB port, then you need to change the physical_path in the config file.
+  # - Finally, video_id is the most fragile way to identify a camera, because it may change when camera plug in order changes.
+  #   but if you just want to use video_id, please make sure to set physical_path and serial_number to null!
+  #   once you specify either `physical_path` or `serial_number`, the system will no longer fall back to searching by `video_id`.
+  #   ——— even if no camera matches the given path/serial.
   video_id: 2                    # according to the discovery result, you could find the UVC Camera2's video_path is /dev/video2
   serial_number: 01.00.00        # you could find the UVC Camera2's serial_number is 01.00.00
   physical_path: null            # you could find the UVC Camera2's physical_path is /sys/devices/pci0000:00/0000:00:14.0/usb1/1-11/1-11.1/1-11.1:1.0
@@ -200,8 +213,8 @@ left_wrist_camera:
   # if not found, then try to use serial_number,
   # if not found, then try to use video_id.
   video_id: 4
-  serial_number: 200901010001
-  physical_path: /sys/devices/pci0000:00/0000:00:14.0/usb1/1-11/1-11.2/1-11.2:1.0
+  serial_number: 200901010001    # you also could fill realsense serial number here if you are using realsense camera
+  physical_path: /sys/devices/pci0000:00/0000:00:14.0/usb1/1-11/1-11.2/1-11.2:1.0 # when you use RealSense camera, physical_path should be null
 
 # =====================================================
 # Right wrist camera configuration

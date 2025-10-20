@@ -5,7 +5,7 @@ import os
 import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
-import src.teleimager.messaging as messaging
+import messaging
 logger_mp = logging_mp.get_logger(__name__, level=logging_mp.DEBUG)
 
 class ImageClient:
