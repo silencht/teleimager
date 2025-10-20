@@ -460,7 +460,7 @@ class OpenCVCamera(BaseCamera):
         self.video_path = video_path
 
         self.cap = cv2.VideoCapture(self.video_path, cv2.CAP_V4L2)
-        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G'))
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.img_shape[0])
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.img_shape[1])
         self.cap.set(cv2.CAP_PROP_FPS, self.fps)

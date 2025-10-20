@@ -1,6 +1,6 @@
 [project]
 name = "teleimager"
-version = "0.9.3"
+version = "0.9.5"
 description = "TeleImager: multi-camera image streaming service for unitree teleoperation"
 authors = [
     { name = "silencht", email = "silencht@qq.com" }
