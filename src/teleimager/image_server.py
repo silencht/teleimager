@@ -6,7 +6,8 @@ import numpy as np
 import uvc
 import yaml
 import time
-import messaging
+import zmq_msg
+import webrtc_msg
 import threading
 import signal
 import functools
@@ -17,7 +18,7 @@ logger_mp = logging_mp.get_logger(__name__, level=logging_mp.INFO)
 # Resolve the absolute path of cam_config.yaml relative to this script
 CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "..", "..", "cam_config.yaml"                
+    "..", "..", "cam_config.yaml"
 )
 CONFIG_PATH = os.path.normpath(CONFIG_PATH)
 
@@ -25,7 +26,7 @@ CONFIG_PATH = os.path.normpath(CONFIG_PATH)
 # camera and camera discovery
 # ========================================================
 class CameraFinder:
-    """ 
+    """
     Discover connected cameras and their properties.
     vpath: /dev/videoX
     ppath: physical path in /sys/class/video4linux, e.g. /sys/devices/pci0000:00/0000:00:14.0/usb1/1-11/1-11.2/1-11.2:1.0
@@ -293,10 +294,15 @@ class CameraFinder:
         logger_mp.info("=========================== Camera Discovery End ================================")
 
 class BaseCamera:
-    def __init__(self, img_shape, fps, port):
+    def __init__(self, cam_topic, img_shape, fps, zmq_enable=True, zmq_port=55555, webrtc_enable=False, webrtc_port=66666):
+        self.cam_topic = cam_topic
         self.img_shape = img_shape # (H, W)
         self.fps = fps
-        self.port = port
+        self.zmq_enable = zmq_enable
+        self.zmq_port = zmq_port
+        self.webrtc_enable = webrtc_enable
+        self.webrtc_port = webrtc_port
+        self._lock = threading.Lock()
 
     def __str__(self):
         raise NotImplementedError
@@ -305,16 +311,21 @@ class BaseCamera:
         return self.__str__()
 
     def get_frame(self):
-        """Return a color image frame as bytes"""
+        """Return a jepg frame as bytes, and a bgr frame as numpy array"""
         raise NotImplementedError
 
     def get_depth_frame(self):
-        """Return a depth frame as bytes, or None if not supported"""
+        """Return a depth frame as bytes, or None if not supported. 
+           Before call this function, must first call get_frame() to update the latest depth data."""
         return None
 
-    def get_port(self):
-        """Return the port number the camera is serving on."""
-        return self.port
+    def get_zmq_port(self):
+        """Return the zmq port number the camera is serving on."""
+        return self.zmq_port
+    
+    def get_webrtc_port(self):
+        """Return the webrtc port number the camera is serving on."""
+        return self.webrtc_port
 
     def get_fps(self):
         """Return the camera FPS setting."""
@@ -325,10 +336,10 @@ class BaseCamera:
         raise NotImplementedError
 
 class RealSenseCamera(BaseCamera):
-    def __init__(self, serial_number, img_shape, fps, port, enable_depth=False) -> None:
-        super().__init__(img_shape, fps, port)
-        self.serial_number = serial_number
-        self.enable_depth = enable_depth
+    def __init__(self, cam_topic, serial_number, img_shape, fps, zmq_enable=True, zmq_port = 55555, webrtc_enable=False, webrtc_port=66666, enable_depth=False):
+        super().__init__(cam_topic, img_shape, fps, zmq_enable, zmq_port, webrtc_enable, webrtc_port)
+        self._serial_number = serial_number
+        self._enable_depth = enable_depth
         self._latest_depth = None
 
         try:
@@ -351,53 +362,59 @@ class RealSenseCamera(BaseCamera):
             self.align = rs.align(align_to)
             self.pipeline = rs.pipeline()
             config = rs.config()
-            config.enable_device(self.serial_number)
+            config.enable_device(self._serial_number)
 
             config.enable_stream(rs.stream.color, self.img_shape[1], self.img_shape[0], rs.format.bgr8, self.fps)
-            if self.enable_depth:
+            if self._enable_depth:
                 config.enable_stream(rs.stream.depth, self.img_shape[1], self.img_shape[0], rs.format.z16, self.fps)
 
             profile = self.pipeline.start(config)
             self._device = profile.get_device()
             if self._device is None:
                 logger_mp.error('[RealSenseCamera] pipe_profile.get_device() is None .')
-            if self.enable_depth:
+            if self._enable_depth:
                 assert self._device is not None
                 depth_sensor = self._device.first_depth_sensor()
                 self.g_depth_scale = depth_sensor.get_depth_scale()
 
             self.intrinsics = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
-            logger_mp.info(f"[RealSenseCamera] {self.serial_number} initialized with "
-                        f"{self.img_shape[0]} x {self.img_shape[1]} @ {self.fps}, on port: {self.port}")
+            logger_mp.info(str(self))
         except Exception as e:
             if self.pipeline:
                 try:
                     self.pipeline.stop()
                 except:
                     pass
-            raise RuntimeError(f"[RealSenseCamera] Failed to initialize RealSense camera {self.serial_number}: {e}")
+            raise RuntimeError(f"[RealSenseCamera] Failed to initialize RealSense camera {self._serial_number}: {e}")
 
     def __str__(self):
-        return f"RealSenseCamera(SN:{self.serial_number}, port={self.port}, shape={self.img_shape}, fps={self.fps})"
+        return (
+            f"[RealSenseCamera: {self.cam_topic}] initialized with "
+            f"{self.img_shape[0]}x{self.img_shape[1]} @ {self.fps} FPS.\n"
+            f"ZMQ: {'enabled, zmq port=' + str(self.zmq_port) if self.zmq_enable else 'disabled'}; "
+            f"WebRTC: {'enabled, webrtc port=' + str(self.webrtc_port) if self.webrtc_enable else 'disabled'}"
+        )
 
     def get_frame(self):
-        frames = self.pipeline.wait_for_frames()
-        aligned_frames = self.align.process(frames)
-        color_frame = aligned_frames.get_color_frame()
-        if not color_frame:
-            return None
+        with self._lock:
+            frames = self.pipeline.wait_for_frames()
+            aligned_frames = self.align.process(frames)
+            color_frame = aligned_frames.get_color_frame()
+            if not color_frame:
+                return None
 
-        if self.enable_depth:   
-            depth_frame = aligned_frames.get_depth_frame()
-            if depth_frame:
-                self._latest_depth = np.asanyarray(depth_frame.get_data())
-            else:
-                self._latest_depth = None
+            if self._enable_depth:   
+                depth_frame = aligned_frames.get_depth_frame()
+                if depth_frame:
+                    self._latest_depth = np.asanyarray(depth_frame.get_data())
+                else:
+                    self._latest_depth = None
 
-        color_image = np.asanyarray(color_frame.get_data())
-        # color_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
-        ok, buf = cv2.imencode(".jpg", color_image)
-        return buf.tobytes() if ok else None
+            bgr_numpy = np.asanyarray(color_frame.get_data())
+            # color_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+            ok, buf = cv2.imencode(".jpg", bgr_numpy)
+            jpeg_bytes = buf.tobytes() if ok else None
+            return jpeg_bytes, bgr_numpy
 
     def get_depth_frame(self):
         if self._latest_depth is None:
@@ -406,11 +423,11 @@ class RealSenseCamera(BaseCamera):
 
     def release(self):
         self.pipeline.stop()
-        logger_mp.info(f"[RealSenseCamera] Released {self.serial_number}")
+        logger_mp.info(f"[RealSenseCamera] Released {self._serial_number}")
 
 class UVCCamera(BaseCamera):
-    def __init__(self, uid, img_shape, fps, port):
-        super().__init__(img_shape, fps, port)
+    def __init__(self, cam_topic, uid, img_shape, fps, zmq_enable=True, zmq_port=55555, webrtc_enable=False, webrtc_port=66666):
+        super().__init__(cam_topic, img_shape, fps, zmq_enable, zmq_port, webrtc_enable, webrtc_port)
         self.uid = uid
         self.cap = None
         try:
@@ -421,14 +438,18 @@ class UVCCamera(BaseCamera):
 
         try:
             self.cap.frame_mode = self._choose_mode(self.cap, width=self.img_shape[1], height=self.img_shape[0], fps=self.fps)
-            logger_mp.info(f"[UVCCamera] {self.uid} initialized "
-                           f"with {self.img_shape[0]} x {self.img_shape[1]} @ {self.fps}  MJPG, on port: {self.port}")
+            logger_mp.info(str(self))
         except Exception as e:
             self.cap = None
             raise RuntimeError(f"[UVCCamera] Failed to set mode for {self.uid}: {e}")
 
     def __str__(self):
-        return f"UVCCamera(UID:{self.uid}, port={self.port}, shape={self.img_shape}, fps={self.fps})"
+        return (
+            f"[UVCCamera: {self.cam_topic}] initialized with "
+            f"{self.img_shape[0]}x{self.img_shape[1]} @ {self.fps} FPS.\n"
+            f"ZMQ: {'enabled, zmq port=' + str(self.zmq_port) if self.zmq_enable else 'disabled'}; "
+            f"WebRTC: {'enabled, webrtc port=' + str(self.webrtc_port) if self.webrtc_enable else 'disabled'}"
+        )
 
     def _choose_mode(self, cap, width=None, height=None, fps=None):
         for m in cap.available_modes:
@@ -437,12 +458,15 @@ class UVCCamera(BaseCamera):
         raise ValueError("[UVCCamera] No matching uvc mode found")
 
     def get_frame(self):
-        if self.cap is None:
-            return None
-        frame = self.cap.get_frame() # get_frame_robust()
-        if frame is None or frame.jpeg_buffer is None:
-            return None
-        return bytes(frame.jpeg_buffer)
+        with self._lock:
+            if self.cap is None:
+                return None, None 
+            frame = self.cap.get_frame() # get_frame_robust()
+            if frame is None or frame.jpeg_buffer is None:
+                return None, None
+            jpeg_bytes = bytes(frame.jpeg_buffer)
+            bgr_numpy = frame.bgr
+            return jpeg_bytes, bgr_numpy
 
     def release(self):
         if self.cap:
@@ -455,11 +479,11 @@ class UVCCamera(BaseCamera):
         logger_mp.info(f"[UVCCamera] Released {self.uid}")
 
 class OpenCVCamera(BaseCamera):
-    def __init__(self, video_path, img_shape, fps, port):
-        super().__init__(img_shape, fps, port)
-        self.video_path = video_path
+    def __init__(self, cam_topic, video_path, img_shape, fps, zmq_enable=True, zmq_port=55555, webrtc_enable=False, webrtc_port=66666):
+        super().__init__(cam_topic, img_shape, fps, zmq_enable, zmq_port, webrtc_enable, webrtc_port)
+        self._video_path = video_path
 
-        self.cap = cv2.VideoCapture(self.video_path, cv2.CAP_V4L2)
+        self.cap = cv2.VideoCapture(self._video_path, cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.img_shape[0])
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.img_shape[1])
@@ -468,28 +492,37 @@ class OpenCVCamera(BaseCamera):
         # Test if the camera can read frames
         if not self._can_read_frame():
             self.release()
-            raise RuntimeError(f"[OpenCVCamera] Camera {self.video_path} failed to initialize or read frames.")
+            raise RuntimeError(f"[OpenCVCamera] Camera {self._video_path} failed to initialize or read frames.")
         else:
-            logger_mp.info(f"[OpenCVCamera] {self.video_path} initialized with "
-                           f"{self.img_shape[0]} x {self.img_shape[1]} @ {self.fps}, on port: {self.port}")
+            logger_mp.info(str(self))
+
     def __str__(self):
-        return f"OpenCVCamera(path:{self.video_path}, port={self.port}, shape={self.img_shape}, fps={self.fps})"
+        return (
+            f"[OpenCVCamera: {self.cam_topic}] initialized with "
+            f"{self.img_shape[0]}x{self.img_shape[1]} @ {self.fps} FPS.\n"
+            f"ZMQ: {'enabled, zmq port=' + str(self.zmq_port) if self.zmq_enable else 'disabled'}; "
+            f"WebRTC: {'enabled, webrtc port=' + str(self.webrtc_port) if self.webrtc_enable else 'disabled'}"
+        )
         
     def _can_read_frame(self):
         success, _ = self.cap.read()
         return success
 
     def get_frame(self):
-        ret, frame = self.cap.read()
-        if not ret or frame is None:
-            return None
-        ok, buf = cv2.imencode(".jpg", frame)
-        return buf.tobytes() if ok else None
+        with self._lock:
+            if self.cap is None:
+                return None, None
+            ret, bgr_numpy = self.cap.read()
+            if not ret or bgr_numpy is None:
+                return None, None
+            ok, buf = cv2.imencode(".jpg", bgr_numpy)
+            jpeg_bytes = buf.tobytes() if ok else None
+            return jpeg_bytes, bgr_numpy
 
     def release(self):
         self.cap.release()
         self.cap = None
-        logger_mp.info(f"[OpenCVCamera] Released {self.video_path}")
+        logger_mp.info(f"[OpenCVCamera] Released {self._video_path}")
 
 # ========================================================
 # image server
@@ -501,21 +534,25 @@ class ImageServer:
         self._stop_event = threading.Event()
         self._cameras = {}
         self._cam_finder = CameraFinder(realsense_enable, camera_finder_verbose)
-        self._responser = messaging.Responser(self._cam_config)
-        self._publisher_manager = messaging.PublisherManager.get_instance()
+        self._responser = zmq_msg.Responser(self._cam_config)
+        self._zmq_publisher_manager = zmq_msg.PublisherManager.get_instance()
+        self._webrtc_publisher_manager = webrtc_msg.PublisherManager.get_instance()
         self._publisher_threads = []  # keep references for graceful join
 
         try:
             # Load cameras from self.cam_config
             for cam_topic, cam_cfg in self._cam_config.items():
-                if not cam_cfg.get("enable", False):
+                if not cam_cfg.get("zmq_enable", False) and not cam_cfg.get("webrtc_enable", False):
                     continue
 
-                cam_type = cam_cfg["type"]
-                cam_port = cam_cfg["port"]
-                img_shape = cam_cfg["image_shape"]
-                fps = cam_cfg["fps"]
-                video_id = cam_cfg["video_id"]
+                zmq_enable = cam_cfg.get("zmq_enable", False)
+                zmq_port = cam_cfg.get("zmq_port", None)
+                webrtc_enable = cam_cfg.get("webrtc_enable", False)
+                webrtc_port = cam_cfg.get("webrtc_port", None)
+                cam_type = cam_cfg.get("type", "uvc").lower()
+                img_shape = cam_cfg.get("image_shape", None)
+                fps = cam_cfg.get("fps", 30)
+                video_id = cam_cfg.get("video_id", "0")
                 video_path = f"/dev/video{video_id}" if video_id else None
                 physical_path = str(cam_cfg.get("physical_path")) if cam_cfg.get("physical_path") else None
                 serial_number = str(cam_cfg.get("serial_number")) if cam_cfg.get("serial_number") else None
@@ -527,7 +564,7 @@ class ImageServer:
                             self._cameras[cam_topic] = None
                             logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with physical path {physical_path}")
                         else:
-                            self._cameras[cam_topic] = OpenCVCamera(vpath, img_shape, fps, cam_port)
+                            self._cameras[cam_topic] = OpenCVCamera(cam_topic, vpath, img_shape, fps, zmq_enable, zmq_port, webrtc_enable, webrtc_port)
                             continue
 
                     if serial_number is not None:
@@ -536,7 +573,7 @@ class ImageServer:
                             self._cameras[cam_topic] = None
                             logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with serial number {serial_number}")
                         else:
-                            self._cameras[cam_topic] = OpenCVCamera(vpath, img_shape, fps, cam_port)
+                            self._cameras[cam_topic] = OpenCVCamera(cam_topic, vpath, img_shape, fps, zmq_enable, zmq_port, webrtc_enable, webrtc_port)
                         # once you specify either `physical_path` or `serial_number`, the system will no longer fall back to searching by `video_id`.
                         # ——— even if no camera matches the given path/serial.
                         continue
@@ -545,7 +582,7 @@ class ImageServer:
                         self._cameras[cam_topic] = None
                         logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with video_id {video_id}")
                     else:
-                        self._cameras[cam_topic] = OpenCVCamera(video_path, img_shape, fps, cam_port)
+                        self._cameras[cam_topic] = OpenCVCamera(cam_topic, video_path, img_shape, fps, zmq_enable, zmq_port, webrtc_enable, webrtc_port)
                         
 
                 elif cam_type == "realsense":
@@ -556,7 +593,7 @@ class ImageServer:
                         self._cameras[cam_topic] = None
                         logger_mp.error(f"[Image Server] Cannot find RealSenseCamera for {cam_topic}")
                     else:
-                        self._cameras[cam_topic] = RealSenseCamera(serial_number, img_shape, fps, cam_port)
+                        self._cameras[cam_topic] = RealSenseCamera(cam_topic, serial_number, img_shape, fps, zmq_enable, zmq_port, webrtc_enable, webrtc_port)
 
                 elif cam_type == "uvc":
                     uid = None
@@ -566,7 +603,7 @@ class ImageServer:
                             self._cameras[cam_topic] = None
                             logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with physical path {physical_path}")
                         else:
-                            self._cameras[cam_topic] = UVCCamera(uid, img_shape, fps, cam_port)
+                            self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps, zmq_enable, zmq_port, webrtc_enable, webrtc_port)
                             continue
 
                     if serial_number is not None:
@@ -575,7 +612,7 @@ class ImageServer:
                             self._cameras[cam_topic] = None
                             logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with serial number {serial_number}")
                         else:
-                            self._cameras[cam_topic] = UVCCamera(uid, img_shape, fps, cam_port)
+                            self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps, zmq_enable, zmq_port, webrtc_enable, webrtc_port)
                         # once you specify either `physical_path` or `serial_number`, the system will no longer fall back to searching by `video_id`.
                         # ——— even if no camera matches the given path/serial.
                         continue
@@ -590,7 +627,7 @@ class ImageServer:
                                 self._cameras[cam_topic] = None
                                 logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with uid from video_id {video_id}")
                             else:
-                                self._cameras[cam_topic] = UVCCamera(uid, img_shape, fps, cam_port)
+                                self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps, zmq_enable, zmq_port, webrtc_enable, webrtc_port)
                 else:
                     logger_mp.error(f"[Image Server] Unknown camera type {cam_type} for {cam_topic}, skipping...")
                     continue
@@ -601,15 +638,15 @@ class ImageServer:
 
         logger_mp.info("[Image Server] Image server has started, waiting for client connections...")
  
-    def _image_pub(self, camera_topic_name, camera, stop_event):
+    def _zmq_pub(self, cam_topic, camera, stop_event):
         try:
             interval = 1.0 / camera.get_fps()
             next_frame_time = time.monotonic()
 
             while not stop_event.is_set():
-                frame = camera.get_frame()
-                if frame:
-                    self._publisher_manager.publish(frame, camera.get_port())
+                jpeg_bytes, _ = camera.get_frame()
+                if jpeg_bytes:
+                    self._zmq_publisher_manager.publish(jpeg_bytes, camera.get_zmq_port())
                 else:
                     logger_mp.warning(f"Camera {camera} returned no frame.")
                     stop_event.set()
@@ -622,7 +659,31 @@ class ImageServer:
                 else:
                     next_frame_time = time.monotonic()
         except Exception as e:
-            logger_mp.error(f"Failed to publish frame from {camera_topic_name} camera.")
+            logger_mp.error(f"[Image Server] Failed to publish zmq frame from {cam_topic} camera.")
+            stop_event.set()
+    
+    def _webrtc_pub(self, cam_topic, camera, stop_event):
+        try:
+            interval = 1.0 / camera.get_fps()
+            next_frame_time = time.monotonic()
+            while not stop_event.is_set():
+                _, bgr_numpy = camera.get_frame()
+
+                if bgr_numpy is not None:
+                    self._webrtc_publisher_manager.publish(bgr_numpy, camera.get_webrtc_port())
+                else:
+                    logger_mp.info(f"Camera {camera} returned no frame.")
+                    stop_event.set()
+                    break
+
+                next_frame_time += interval
+                sleep_time = next_frame_time - time.monotonic()
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    next_frame_time = time.monotonic()
+        except Exception as e:
+            logger_mp.error(f"[Image Server] Failed to publish rtc frame from {cam_topic} camera.")
             stop_event.set()
 
     def _clean_up(self):
@@ -635,17 +696,24 @@ class ImageServer:
         for cam in self._cameras.values():
             if cam:
                 cam.release()
-        self._publisher_manager.close()
+        self._zmq_publisher_manager.close()
+        self._webrtc_publisher_manager.close()
         logger_mp.info("[Image Server] Shutdown complete.")
 
     # --------------------------------------------------------
     # public api
     # --------------------------------------------------------
     def start(self):
-        for camera_topic_name, camera in self._cameras.items():
-            t = threading.Thread(target=self._image_pub, args=(camera_topic_name, camera, self._stop_event), daemon=True)
-            t.start()
-            self._publisher_threads.append(t)
+        for camera_topic, camera in self._cameras.items():
+            if camera.webrtc_enable:
+                t = threading.Thread(target=self._webrtc_pub, args=(camera_topic, camera, self._stop_event), daemon=True)
+                t.start()
+                self._publisher_threads.append(t)
+
+            if camera.zmq_enable:
+                t = threading.Thread(target=self._zmq_pub, args=(camera_topic, camera, self._stop_event), daemon=True)
+                t.start()
+                self._publisher_threads.append(t)
 
     def wait(self):
         self._stop_event.wait()

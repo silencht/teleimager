@@ -123,6 +123,7 @@ class PublisherThread(threading.Thread):
                 self._socket = None
 
     def wait_for_start(self, timeout: float = 1.0) -> bool:
+        """Wait until socket context is ready"""
         return self._started.wait(timeout=timeout)
 
 class PublisherManager:
@@ -277,6 +278,7 @@ class SubscriberThread(threading.Thread):
             return None
         
     def _wait_for_start(self, timeout: float = 1.0) -> bool:
+        """Wait until socket context is ready"""
         return self._started.wait(timeout=timeout)
     
     def _update_fps(self):
