@@ -13,9 +13,6 @@ class ImageClient:
         """
         Args:
             server_address:   IP address of image host server
-            head_port:        Port for subscribe head camera
-            left_wrist_port:  Port for subscribe left wrist camera
-            right_wrist_port: Port for subscribe right wrist camera
             requset_port:     Port for request camera configuration
         """
         self._host = host
@@ -100,6 +97,9 @@ class ImageClient:
     def has_left_wrist_cam(self):
         return self._left_wrist_cam_zmq_enable
 
+    def get_left_wrist_shape(self):
+        return self._left_wrist_cam_shape
+
     def get_left_wrist_frame(self):
         """Get the latest left wrist camera frame, and the current receiving FPS."""
         if self._left_wrist_cam_zmq_enable:
@@ -110,6 +110,9 @@ class ImageClient:
 
     def has_right_wrist_cam(self):
         return self._right_wrist_cam_zmq_enable
+
+    def get_right_wrist_shape(self):
+        return self._right_wrist_cam_shape
 
     def get_right_wrist_frame(self):
         """Get the latest right wrist camera frame, and the current receiving FPS."""
@@ -139,19 +142,24 @@ if __name__ == "__main__":
             logger_mp.info(f"Head Camera FPS: {head_fps:.2f}")
             logger_mp.debug(f"Head Camera Shape: {head_shape}")
             logger_mp.debug(f"Head Camera Binocular: {binocular}")
-            cv2.imshow("Head Camera", head_img)
+            if head_img is not None:
+                cv2.imshow("Head Camera", head_img)
 
         if client.has_left_wrist_cam():
             left_wrist_img, left_wrist_fps = client.get_left_wrist_frame()
+            left_wrist_shape = client.get_left_wrist_shape()
             logger_mp.info(f"Left Wrist Camera FPS: {left_wrist_fps:.2f}")
-            logger_mp.debug(f"Left Wrist Camera Shape: {left_wrist_img.shape}")
-            cv2.imshow("Left Wrist Camera", left_wrist_img)
+            logger_mp.debug(f"Left Wrist Camera Shape: {left_wrist_shape}")
+            if left_wrist_img is not None:
+                cv2.imshow("Left Wrist Camera", left_wrist_img)
 
         if client.has_right_wrist_cam():
             right_wrist_img, right_wrist_fps = client.get_right_wrist_frame()
+            right_wrist_shape = client.get_right_wrist_shape()
             logger_mp.info(f"Right Wrist Camera FPS: {right_wrist_fps:.2f}")
-            logger_mp.debug(f"Right Wrist Camera Shape: {right_wrist_img.shape}")
-            cv2.imshow("Right Wrist Camera", right_wrist_img)
+            logger_mp.debug(f"Right Wrist Camera Shape: {right_wrist_shape}")
+            if right_wrist_img is not None:
+                cv2.imshow("Right Wrist Camera", right_wrist_img)
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             logger_mp.info("Exiting image client on user request.")
