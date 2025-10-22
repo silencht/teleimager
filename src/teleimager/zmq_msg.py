@@ -25,7 +25,7 @@ import numpy as np
 import cv2
 import time
 import logging_mp
-logger_mp = logging_mp.get_logger(__name__, level=logging_mp.INFO)
+logger_mp = logging_mp.get_logger(__name__)
 
 # ========================================================
 # Utility tools
@@ -339,11 +339,9 @@ class SubscriberThread(threading.Thread):
                     try:
                         # receive the latest message
                         img_bytes = self._socket.recv()
-                        img_numpy = self._decode_image(img_bytes)
-                        # update fps
-                        self._update_fps()
-                        # write to 3-ring-buffer
-                        self._triple_ring_buffer.write(img_numpy)
+                        img_numpy = self._decode_image(img_bytes)  # decode JPEG bytes to bgr image
+                        self._update_fps()                         # update fps
+                        self._triple_ring_buffer.write(img_numpy)  # write to 3-ring-buffer
                     except zmq.Again:
                         continue
                     except Exception as e:

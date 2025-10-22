@@ -1,7 +1,6 @@
 import asyncio
 import threading
 import json
-import os
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from aiortc.contrib.media import MediaRelay
@@ -11,7 +10,7 @@ from fractions import Fraction
 import numpy as np
 from typing import Dict, Optional, Tuple, Any
 import logging_mp
-logger_mp = logging_mp.get_logger(__name__, level=logging_mp.INFO)
+logger_mp = logging_mp.get_logger(__name__)
 
 
 # ========================================================
@@ -269,7 +268,7 @@ class WebRTC_PublisherThread(threading.Thread):
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
             logger_mp.info(f"Connection state is {pc.connectionState}")
-            if pc.connectionState == "failed":
+            if pc.connectionState == "failed" or pc.connectionState == "closed":
                 await self._cleanup_pc(pc)
 
         await pc.setRemoteDescription(offer)
@@ -289,7 +288,6 @@ class WebRTC_PublisherThread(threading.Thread):
             except Exception:
                 pass
             self._pcs.discard(pc)
-            logger_mp.debug("Closed and removed pc %s", pc)
 
     async def _on_shutdown(self, app: web.Application):
         """Shutdown all pcs and its queues."""
@@ -322,13 +320,23 @@ class WebRTC_PublisherThread(threading.Thread):
 
             while not self._stop_event.is_set():
                 await asyncio.sleep(0.5)
-            await self._runner.cleanup()
 
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(_http_server())
         finally:
+            if self._bgr_track:
+                try:
+                    self._loop.run_until_complete(self._bgr_track.stop())
+                except Exception:
+                    pass
+            if self._runner:
+                try:
+                    self._loop.run_until_complete(self._runner.cleanup())
+                except Exception:
+                    pass
+
             pending = asyncio.all_tasks(loop=self._loop)
             for t in pending:
                 t.cancel()
@@ -358,8 +366,7 @@ class WebRTC_PublisherThread(threading.Thread):
                 fut.result(timeout=1)
             except Exception:
                 pass
-        self.join(timeout=2)
-
+        self.join()
 
 class PublisherManager:
     """Centralized management of WebRTC publishers"""
