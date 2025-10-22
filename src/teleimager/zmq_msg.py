@@ -28,7 +28,7 @@ import logging_mp
 logger_mp = logging_mp.get_logger(__name__, level=logging_mp.INFO)
 
 # ========================================================
-# triple ring buffer
+# Utility tools
 # ========================================================
 class TripleRingBuffer:
     def __init__(self):
@@ -59,12 +59,12 @@ class TripleRingBuffer:
 class PublisherThread(threading.Thread):
     """Thread that owns a PUB socket and handles publishing via a queue."""
 
-    def __init__(self, port: int, host: str = "*", context: Optional[zmq.Context] = None):
+    def __init__(self, port: int, host: str = "0.0.0.0", context: Optional[zmq.Context] = None):
         """Initialize publisher thread.
 
         Args:
             port: The port number to bind to.
-            host: The host address to bind to (default: all interfaces '*').
+            host: The host address to bind to (default: all interfaces "*").
         """
         super().__init__(daemon=True)
         self._port = port
@@ -163,7 +163,7 @@ class PublisherManager:
     def __init__(self):
         self._context = zmq.Context()
 
-    def _create_publisher_thread(self, port: int, host: str = "*") -> PublisherThread:
+    def _create_publisher_thread(self, port: int, host: str = "0.0.0.0") -> PublisherThread:
         try:
             publisher_thread = PublisherThread(port, host, self._context)
             publisher_thread.start()
@@ -176,7 +176,7 @@ class PublisherManager:
             logger_mp.error(f"Failed to create publisher thread for {host}:{port}: {e}")
             raise
 
-    def _get_publisher_thread(self, port: int, host: str = "*") -> PublisherThread:
+    def _get_publisher_thread(self, port: int, host: str = "0.0.0.0") -> PublisherThread:
         key = (host, port)
         with self._lock:
             if key not in self._publisher_threads:
@@ -207,7 +207,7 @@ class PublisherManager:
                     cls._instance = cls()
         return cls._instance
 
-    def publish(self, data: Any, port: int, host: str = "*") -> None:
+    def publish(self, data: Any, port: int, host: str = "0.0.0.0") -> None:
         """Publish data to queue-based communication.
 
         Args:
@@ -440,7 +440,7 @@ class Responser:
 
     Publishes `data` whenever a request is received.
     """
-    def __init__(self, data, host: str = "*", port: int = 60000):
+    def __init__(self, data, host: str = "0.0.0.0", port: int = 60000):
         """
         Args:
             data: The data to send in response to requests.

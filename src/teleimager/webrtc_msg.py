@@ -158,7 +158,7 @@ class TripleRingBuffer:
     def read(self):
         with self.lock:
             if self.latest_index == -1:
-                return np.zeros((480, 1280, 3), dtype=np.uint8)
+                return None # No data has been written yet
             self.read_index = self.latest_index
         return self.buffer[self.read_index]
 
@@ -222,7 +222,7 @@ class BGRArrayVideoStreamTrack(MediaStreamTrack):
 
 class WebRTC_PublisherThread(threading.Thread):
     """A thread that runs an aiohttp web server with aiortc to publish video frames via WebRTC."""
-    def __init__(self, port: int, host: str = "*"):
+    def __init__(self, port: int, host: str = "0.0.0.0"):
         super().__init__(daemon=True)
         self._host = host
         self._port = port
@@ -372,7 +372,7 @@ class PublisherManager:
     def __init__(self):
         pass
 
-    def _create_publisher_thread(self, port: int, host: str = "*") -> WebRTC_PublisherThread:
+    def _create_publisher_thread(self, port: int, host: str = "0.0.0.0") -> WebRTC_PublisherThread:
         try:
             publisher_thread = WebRTC_PublisherThread(port, host)
             publisher_thread.start()

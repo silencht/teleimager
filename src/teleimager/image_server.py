@@ -295,6 +295,7 @@ class CameraFinder:
 
 class BaseCamera:
     def __init__(self, cam_topic, img_shape, fps, zmq_enable=True, zmq_port=55555, webrtc_enable=False, webrtc_port=66666):
+        self.ready = threading.Event()
         self.cam_topic = cam_topic
         self.img_shape = img_shape # (H, W)
         self.fps = fps
@@ -303,7 +304,8 @@ class BaseCamera:
         if self.zmq_enable:
             self.zmq_buffer = zmq_msg.TripleRingBuffer()
         else:
-            self.zmq_buffer = None 
+            self.zmq_buffer = None
+
         self.webrtc_enable = webrtc_enable
         self.webrtc_port = webrtc_port
         if self.webrtc_enable:
@@ -321,12 +323,22 @@ class BaseCamera:
         """Return a jepg frame as bytes, and a bgr frame as numpy array"""
         raise NotImplementedError
     
+    def wait_until_ready(self, timeout=None):
+        """Block until the camera is ready (first frame is available) or timeout occurs."""
+        return self.ready.wait(timeout=timeout)
+
+    def webrtc_is_enabled(self):
+        return self.webrtc_enable
+    
+    def zmq_is_enabled(self):
+        return self.zmq_enable
+
     def get_jpeg_bytes(self):
-        jpeg_bytes = self.zmq_buffer.read() if self.zmq_enable else None
+        jpeg_bytes = self.zmq_buffer.read() if self.zmq_enable and self.zmq_buffer else None
         return jpeg_bytes
 
     def get_bgr_frame(self):
-        bgr_numpy = self.webrtc_buffer.read() if self.webrtc_enable else None
+        bgr_numpy = self.webrtc_buffer.read() if self.webrtc_enable and self.webrtc_buffer else None
         return bgr_numpy
 
     def get_depth_frame(self):
@@ -425,7 +437,7 @@ class RealSenseCamera(BaseCamera):
                 self._latest_depth = None
 
         bgr_numpy = np.asanyarray(color_frame.get_data())
-        # color_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2RGB)
+
         if self.webrtc_enable:
             self.webrtc_buffer.write(bgr_numpy)
 
@@ -433,6 +445,9 @@ class RealSenseCamera(BaseCamera):
             ok, buf = cv2.imencode(".jpg", bgr_numpy)
             if ok:
                 self.zmq_buffer.write(buf.tobytes())
+        
+        if not self.ready.is_set():
+            self.ready.set()
     
     def get_depth_frame(self):
         if self._latest_depth is None:
@@ -441,7 +456,7 @@ class RealSenseCamera(BaseCamera):
 
     def release(self):
         self.pipeline.stop()
-        logger_mp.info(f"[RealSenseCamera] Released {self._serial_number}")
+        logger_mp.info(f"[RealSenseCamera] Released {self.cam_topic}")
 
 class UVCCamera(BaseCamera):
     def __init__(self, cam_topic, uid, img_shape, fps, zmq_enable=True, zmq_port=55555, webrtc_enable=False, webrtc_port=66666):
@@ -452,19 +467,19 @@ class UVCCamera(BaseCamera):
             self.cap = uvc.Capture(self.uid)
         except Exception as e:
             self.cap = None
-            raise RuntimeError(f"[UVCCamera] Failed to open camera {self.uid}: {e}")
+            raise RuntimeError(f"[UVCCamera] Failed to open camera {self.cam_topic}: {e}")
 
         try:
             self.cap.frame_mode = self._choose_mode(self.cap, width=self.img_shape[1], height=self.img_shape[0], fps=self.fps)
             logger_mp.info(str(self))
         except Exception as e:
             self.cap = None
-            raise RuntimeError(f"[UVCCamera] Failed to set mode for {self.uid}: {e}")
+            raise RuntimeError(f"[UVCCamera] Failed to set mode for {self.cam_topic}: {e}")
 
     def __str__(self):
         return (
             f"[UVCCamera: {self.cam_topic}] initialized with "
-            f"{self.img_shape[0]}x{self.img_shape[1]} @ {self.fps} FPS.\n"
+            f"{self.img_shape[0]}x{self.img_shape[1]} @ {self.fps} FPS, MJPG.\n"
             f"ZMQ: {'enabled, zmq port=' + str(self.zmq_port) if self.zmq_enable else 'disabled'}; "
             f"WebRTC: {'enabled, webrtc port=' + str(self.webrtc_port) if self.webrtc_enable else 'disabled'}"
         )
@@ -482,19 +497,23 @@ class UVCCamera(BaseCamera):
                 if self.zmq_enable:
                     if frame.jpeg_buffer is not None:
                         self.zmq_buffer.write(bytes(frame.jpeg_buffer))
+
                 if self.webrtc_enable:
                     if frame.bgr is not None:
                         self.webrtc_buffer.write(frame.bgr)
+
+                if not self.ready.is_set():
+                    self.ready.set()
 
     def release(self):
         if self.cap:
             try:
                 self.cap.close()
             except Exception as e:
-                logger_mp.error(f"Error releasing UVC camera: {e}")
+                logger_mp.error(f"Error releasing UVC {self.cam_topic}: {e}")
             time.sleep(0.3)
             self.cap = None
-        logger_mp.info(f"[UVCCamera] Released {self.uid}")
+        logger_mp.info(f"[UVCCamera] Released {self.cam_topic}")
 
 class OpenCVCamera(BaseCamera):
     def __init__(self, cam_topic, video_path, img_shape, fps, zmq_enable=True, zmq_port=55555, webrtc_enable=False, webrtc_port=66666):
@@ -510,7 +529,7 @@ class OpenCVCamera(BaseCamera):
         # Test if the camera can read frames
         if not self._can_read_frame():
             self.release()
-            raise RuntimeError(f"[OpenCVCamera] Camera {self._video_path} failed to initialize or read frames.")
+            raise RuntimeError(f"[OpenCVCamera] Camera {self.cam_topic} failed to initialize or read frames.")
         else:
             logger_mp.info(str(self))
 
@@ -537,11 +556,14 @@ class OpenCVCamera(BaseCamera):
                     ok, buf = cv2.imencode(".jpg", bgr_numpy)
                     if ok:
                         self.zmq_buffer.write(buf.tobytes())
+                
+                if not self.ready.is_set():
+                    self.ready.set()
 
     def release(self):
         self.cap.release()
         self.cap = None
-        logger_mp.info(f"[OpenCVCamera] Released {self._video_path}")
+        logger_mp.info(f"[OpenCVCamera] Released {self.cam_topic}")
 
 # ========================================================
 # image server
@@ -551,7 +573,7 @@ class ImageServer:
         self._cam_config = cam_config
         self._realsense_enable = realsense_enable
         self._stop_event = threading.Event()
-        self._cameras = {}
+        self._cameras: dict[str, BaseCamera] = {}
         self._cam_finder = CameraFinder(realsense_enable, camera_finder_verbose)
         self._responser = zmq_msg.Responser(self._cam_config)
         self._zmq_publisher_manager = zmq_msg.PublisherManager.get_instance()
@@ -670,10 +692,10 @@ class ImageServer:
                 else:
                     next_frame_time = time.monotonic()
         except Exception as e:
-            logger_mp.error(f"[Image Server] Failed to update frames for {cam_topic} camera.")
+            logger_mp.error(f"[Image Server] Failed to update frames for {cam_topic} camera: {e}")
             self._stop_event.set()
 
-    def _zmq_pub(self, cam_topic, camera):
+    def _zmq_pub(self, cam_topic: str, camera: BaseCamera):
         try:
             interval = 1.0 / camera.get_fps()
             next_frame_time = time.monotonic()
@@ -697,7 +719,7 @@ class ImageServer:
             logger_mp.error(f"[Image Server] Failed to publish zmq frame from {cam_topic} camera.")
             self._stop_event.set()
     
-    def _webrtc_pub(self, cam_topic, camera):
+    def _webrtc_pub(self, cam_topic: str, camera: BaseCamera):
         try:
             interval = 1.0 / camera.get_fps()
             next_frame_time = time.monotonic()
@@ -725,7 +747,7 @@ class ImageServer:
         self._responser.stop()
         for t in self._publisher_threads:
             if t.is_alive():
-                t.join(timeout=1.0)
+                t.join(timeout=2.0)
         self._publisher_threads.clear()
         
         for cam in self._cameras.values():
@@ -743,16 +765,22 @@ class ImageServer:
             t = threading.Thread(target=self._update_frames, args=(camera_topic, camera), daemon=True)
             t.start()
             self._publisher_threads.append(t)
-
-        time.sleep(1.0)
         
         for camera_topic, camera in self._cameras.items():
-            if camera.webrtc_enable:
+            ready = camera.wait_until_ready(timeout=5.0)
+            if not ready:
+                logger_mp.error(f"[Image Server] {camera_topic} ready timeout.")
+                self._stop_event.set()
+                self._clean_up()
+            logger_mp.info(f"[Image Server] {camera_topic} is ready.")
+        
+        for camera_topic, camera in self._cameras.items():
+            if camera.webrtc_is_enabled():
                 t = threading.Thread(target=self._webrtc_pub, args=(camera_topic, camera), daemon=True)
                 t.start()
                 self._publisher_threads.append(t)
 
-            if camera.zmq_enable:
+            if camera.zmq_is_enabled():
                 t = threading.Thread(target=self._zmq_pub, args=(camera_topic, camera), daemon=True)
                 t.start()
                 self._publisher_threads.append(t)

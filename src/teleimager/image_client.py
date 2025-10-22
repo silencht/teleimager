@@ -6,7 +6,7 @@ import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(current_dir)
 import logging_mp
-logger_mp = logging_mp.get_logger(__name__, level=logging_mp.DEBUG)
+logger_mp = logging_mp.get_logger(__name__, level=logging_mp.INFO)
 
 class ImageClient:
     def __init__(self, host="192.168.123.164", request_port=60000):
@@ -128,10 +128,7 @@ class ImageClient:
 
 if __name__ == "__main__":
     # Example usage with three camera streams
-    client = ImageClient(
-        host='127.0.0.1',  # Change to '127.0.0.1' for local test
-        request_port=60000
-    )
+    client = ImageClient(host='127.0.0.1')  # Change to '127.0.0.1' for local test
     
     running = True
     while running:
