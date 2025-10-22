@@ -9,6 +9,18 @@ import time
 from fractions import Fraction
 import numpy as np
 from typing import Dict, Optional, Tuple, Any
+import ssl
+import os
+CERT_PEM_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "cert.pem"
+)
+KEY_PEM_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "key.pem"
+)
+CERT_PEM_PATH = os.path.normpath(CERT_PEM_PATH)
+KEY_PEM_PATH = os.path.normpath(KEY_PEM_PATH)
 import logging_mp
 logger_mp = logging_mp.get_logger(__name__)
 
@@ -239,6 +251,10 @@ class WebRTC_PublisherThread(threading.Thread):
         self._app.router.add_get("/", self._index)
         self._app.router.add_get("/client.js", self._javascript)
         self._app.router.add_post("/offer", self._offer)
+
+        self._app.router.add_options("/", self._options)
+        self._app.router.add_options("/client.js", self._options)
+        self._app.router.add_options("/offer", self._options)
         self._app.on_shutdown.append(self._on_shutdown)
 
     async def _index(self, request: web.Request) -> web.Response:
@@ -246,7 +262,14 @@ class WebRTC_PublisherThread(threading.Thread):
     
     async def _javascript(self, request: web.Request) -> web.Response:
         return web.Response(content_type="application/javascript", text=CLIENT_JS)
-    
+
+    async def _options(self, request):
+        return web.Response(headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+        })
+
     async def _offer(self, request: web.Request) -> web.Response:
         """Handle incoming WebRTC offer, create RTCPeerConnection, attach a _QueuedVideoTrack, and return an answer."""
         params = await request.json()
@@ -278,6 +301,7 @@ class WebRTC_PublisherThread(threading.Thread):
         return web.Response(
             content_type="application/json",
             text=json.dumps({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}),
+            headers={"Access-Control-Allow-Origin": "*"}
         )
 
     async def _cleanup_pc(self, pc: RTCPeerConnection):
@@ -310,7 +334,9 @@ class WebRTC_PublisherThread(threading.Thread):
         async def _http_server():
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-            site = web.TCPSite(self._runner, self._host, self._port)
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_context.load_cert_chain(CERT_PEM_PATH, KEY_PEM_PATH)
+            site = web.TCPSite(self._runner, self._host, self._port, ssl_context=ssl_context)
             await site.start()
 
             self._relay = MediaRelay()
