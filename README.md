@@ -247,13 +247,7 @@ For example, if the server is running on Unitree G1 Jetson Nx machine with IP ad
 ```python
 if __name__ == "__main__":
     # Example usage with three camera streams
-    client = ImageClient(
-        host='192.168.123.164',  # Change to the server's IP address
-        head_port=55555,
-        left_wrist_port=55556,
-        right_wrist_port=55557,
-        request_port=60000
-    )
+    client = ImageClient(host='192.168.123.164')  # Change to the server's IP address
 #...
 ```
 > Remember to have the **opencv-python** library installed in your environment.

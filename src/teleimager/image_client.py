@@ -1,6 +1,6 @@
 import cv2
 import time
-import zmq_msg
+from . import zmq_msg
 import os
 import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,108 +19,148 @@ class ImageClient:
         self._request_port = request_port
         self._aspect_ratio_threshold = 2.0 # If the aspect ratio exceeds this value, it is considered binocular. ohterwise, monocular.
 
-        # Subscriber and requester setup
+        # requester and subscriber setup
         self._requester  = zmq_msg.Requester(self._host, self._request_port)
         self._subscriber_manager = zmq_msg.SubscriberManager.get_instance()
 
-        # Camera configuration
-        self._head_cam_zmq_enable = True   # default always enable head camera
-        self._head_port = 55555
-        self._binocular = True             # default binocular
-        self._head_cam_shape = (480, 1280)
-        self._head_cam_server_fps = 30.0
-
-        self._left_wrist_cam_zmq_enable = False
-        self._left_wrist_port = 55556
-        self._left_wrist_cam_shape = (480, 640)
-        self._left_wrist_cam_server_fps = 30.0
-
-        self._right_wrist_cam_zmq_enable = False
-        self._right_wrist_port = 55557
-        self._right_wrist_cam_shape = (480, 640)
-        self._right_wrist_cam_server_fps = 30.0
-
         # request camera configuration
-        self.camconfig = self._request_camconfig()
+        self.camconfig = self._requester.request()
+        logger_mp.debug(f"Received camera config: {self.camconfig}")
+
+        # parse camera configuration
+        # default Head camera
+        self._enable_head_zmq = False
+        self._head_zmq_port = 55555
+        self._enable_head_webrtc = False
+        self._head_webrtc_port = 60001
+        self._head_image_shape = (480, 1280)
+        self._head_server_fps = 30.0
+        self._binocular = None
+        # default Left wrist camera
+        self._enable_left_wrist_zmq = False
+        self._left_wrist_zmq_port = 55556
+        self._enable_left_wrist_webrtc = False
+        self._left_wrist_webrtc_port = 60002
+        self._left_wrist_image_shape = (480, 640)
+        self._left_wrist_server_fps = 30.0
+        # default Right wrist camera
+        self._enable_right_wrist_zmq = False
+        self._right_wrist_zmq_port = 55557
+        self._enable_right_wrist_webrtc = False
+        self._right_wrist_webrtc_port = 60003
+        self._right_wrist_image_shape = (480, 640)
+        self._right_wrist_server_fps = 30.0
+
         if self.camconfig is not None:
             # head camera
-            self._head_cam_zmq_enable = self.camconfig['head_camera']['zmq_enable']
-            if self._head_cam_zmq_enable:
-                self._head_port = self.camconfig['head_camera']['zmq_port']
-                self._binocular = self.camconfig['head_camera']['image_shape'][1] / self.camconfig['head_camera']['image_shape'][0] > self._aspect_ratio_threshold
-                self._head_cam_shape = self.camconfig['head_camera']['image_shape']
-                self._head_cam_server_fps = self.camconfig['head_camera']['fps'] # fps set on the server side
-
-                self._subscriber_manager.subscribe(self._host, self._head_port)
+            self._enable_head_zmq = self.camconfig['head_camera']['enable_zmq']
+            if self._enable_head_zmq:
+                self._head_zmq_port = self.camconfig['head_camera']['zmq_port']
+                self._subscriber_manager.subscribe(self._host, self._head_zmq_port)
+            
+            self._enable_head_webrtc = self.camconfig['head_camera']['enable_webrtc']
+            self._head_webrtc_port = self.camconfig['head_camera']['webrtc_port']
+            self._head_webrtc_url = f"https://{self._host}:{self._head_webrtc_port}/offer"
+            self._head_image_shape = self.camconfig['head_camera']['image_shape']
+            self._head_cam_server_fps = self.camconfig['head_camera']['fps'] # fps set on the server side
+            self._binocular = self.camconfig['head_camera']['image_shape'][1] / self.camconfig['head_camera']['image_shape'][0] > self._aspect_ratio_threshold
+            
             # left wrist camera
-            self._left_wrist_cam_zmq_enable = self.camconfig['left_wrist_camera']['zmq_enable']
-            if self._left_wrist_cam_zmq_enable:
-                self._left_wrist_port = self.camconfig['left_wrist_camera']['zmq_port']
-                self._left_wrist_cam_shape = self.camconfig['left_wrist_camera']['image_shape']
-                self._left_wrist_cam_server_fps = self.camconfig['left_wrist_camera']['fps'] # fps set on the server side
-                self._subscriber_manager.subscribe(self._host, self._left_wrist_port)
+            self._enable_left_wrist_zmq = self.camconfig['left_wrist_camera']['enable_zmq']
+            if self._enable_left_wrist_zmq:
+                self._left_wrist_zmq_port = self.camconfig['left_wrist_camera']['zmq_port']
+                self._subscriber_manager.subscribe(self._host, self._left_wrist_zmq_port)
+            
+            self._enable_left_wrist_webrtc = self.camconfig['left_wrist_camera']['enable_webrtc']
+            self._left_wrist_webrtc_port = self.camconfig['left_wrist_camera']['webrtc_port']
+            self._left_wrist_webrtc_url = f"https://{self._host}:{self._left_wrist_webrtc_port}/offer"
+            self._left_wrist_image_shape = self.camconfig['left_wrist_camera']['image_shape']
+            self._left_wrist_server_fps = self.camconfig['left_wrist_camera']['fps'] # fps set on the server side
+
             # right wrist camera
-            self._right_wrist_cam_zmq_enable = self.camconfig['right_wrist_camera']['zmq_enable']
-            if self._right_wrist_cam_zmq_enable:
-                self._right_wrist_port = self.camconfig['right_wrist_camera']['zmq_port']
-                self._right_wrist_cam_shape = self.camconfig['right_wrist_camera']['image_shape']
-                self._right_wrist_cam_server_fps = self.camconfig['right_wrist_camera']['fps'] # fps set on the server side
-                self._subscriber_manager.subscribe(self._host, self._right_wrist_port)
+            self._enable_right_wrist_zmq = self.camconfig['right_wrist_camera']['enable_zmq']
+            if self._enable_right_wrist_zmq:
+                self._right_wrist_zmq_port = self.camconfig['right_wrist_camera']['zmq_port']
+                self._subscriber_manager.subscribe(self._host, self._right_wrist_zmq_port)
+
+            self._enable_right_wrist_webrtc = self.camconfig['right_wrist_camera']['enable_webrtc']
+            self._right_wrist_webrtc_port = self.camconfig['right_wrist_camera']['webrtc_port']
+            self._right_wrist_webrtc_url = f"https://{self._host}:{self._right_wrist_webrtc_port}/offer"
+            self._right_wrist_image_shape = self.camconfig['right_wrist_camera']['image_shape']
+            self._right_wrist_server_fps = self.camconfig['right_wrist_camera']['fps'] # fps set on the server side
         else:
             logger_mp.error("Failed to get camera configuration from server. Please check image server whether it is running.")
 
+        if not self._enable_head_zmq and not self._enable_head_webrtc:
+            logger_mp.warning("[Image Client] NOTICE! Head camera is not enabled on both ZMQ and WebRTC.")
         # Wait for the subscriber to initialize
         time.sleep(0.005)
-
-    def _request_camconfig(self):
-        cam_config = self._requester.request()
-        logger_mp.debug(f"Received camera config: {cam_config}")
-        return cam_config
     
     # --------------------------------------------------------
     # public api
     # --------------------------------------------------------
-    def is_binocular(self):
+    # Head camera
+    def head_is_binocular(self) -> bool:
         return self._binocular
 
-    def has_head_cam(self):
-        return self._head_cam_zmq_enable
+    def enable_head_zmq(self) -> bool:
+        return self._enable_head_zmq
     
-    def get_head_shape(self):
-        return self._head_cam_shape
+    def get_head_shape(self) -> tuple:
+        return self._head_image_shape
 
     def get_head_frame(self):
         """Get the latest head camera frame, and the current receiving FPS."""
-        if self._head_cam_zmq_enable:
-            return self._subscriber_manager.subscribe(self._host, self._head_port)
+        if self._enable_head_zmq:
+            return self._subscriber_manager.subscribe(self._host, self._head_zmq_port)
 
-    def has_left_wrist_cam(self):
-        return self._left_wrist_cam_zmq_enable
+    def enable_head_webrtc(self) -> bool:
+        return self._enable_head_webrtc
 
-    def get_left_wrist_shape(self):
-        return self._left_wrist_cam_shape
+    def head_webrtc_url(self) -> str:
+        return self._head_webrtc_url
+    
+    # Left wrist camera
+    def enable_left_wrist_zmq(self) -> bool:
+        return self._enable_left_wrist_zmq
+
+    def get_left_wrist_shape(self) -> tuple:
+        return self._left_wrist_image_shape
 
     def get_left_wrist_frame(self):
         """Get the latest left wrist camera frame, and the current receiving FPS."""
-        if self._left_wrist_cam_zmq_enable:
-            return self._subscriber_manager.subscribe(self._host, self._left_wrist_port)
+        if self._enable_left_wrist_zmq:
+            return self._subscriber_manager.subscribe(self._host, self._left_wrist_zmq_port)
         else:
             logger_mp.warning("Left wrist camera is not enabled.")
             return None, 0.0
+    
+    def enable_left_wrist_webrtc(self) -> bool:
+        return self._enable_left_wrist_webrtc
 
-    def has_right_wrist_cam(self):
-        return self._right_wrist_cam_zmq_enable
+    def left_wrist_webrtc_url(self) -> str:
+        return self._left_wrist_webrtc_url
 
-    def get_right_wrist_shape(self):
-        return self._right_wrist_cam_shape
+    # Right wrist camera
+    def enable_right_wrist_zmq(self) -> bool:
+        return self._enable_right_wrist_zmq
+
+    def get_right_wrist_shape(self) -> tuple:
+        return self._right_wrist_image_shape
 
     def get_right_wrist_frame(self):
         """Get the latest right wrist camera frame, and the current receiving FPS."""
-        if self._right_wrist_cam_zmq_enable:
-            return self._subscriber_manager.subscribe(self._host, self._right_wrist_port)
+        if self._enable_right_wrist_zmq:
+            return self._subscriber_manager.subscribe(self._host, self._right_wrist_zmq_port)
         else:
             logger_mp.warning("Right wrist camera is not enabled.")
             return None, 0.0
+    
+    def enable_right_wrist_webrtc(self) -> bool:
+        return self._enable_right_wrist_webrtc   
+
+    def right_wrist_webrtc_url(self) -> str:
+        return self._right_wrist_webrtc_url
 
     def close(self):
         self._subscriber_manager.close()
@@ -132,17 +172,17 @@ if __name__ == "__main__":
     
     running = True
     while running:
-        if client.has_head_cam():
+        if client.enable_head_zmq():
             head_img, head_fps = client.get_head_frame()
             head_shape = client.get_head_shape()
-            binocular = client.is_binocular()
+            binocular = client.head_is_binocular()
             logger_mp.info(f"Head Camera FPS: {head_fps:.2f}")
             logger_mp.debug(f"Head Camera Shape: {head_shape}")
             logger_mp.debug(f"Head Camera Binocular: {binocular}")
             if head_img is not None:
                 cv2.imshow("Head Camera", head_img)
 
-        if client.has_left_wrist_cam():
+        if client.enable_left_wrist_zmq():
             left_wrist_img, left_wrist_fps = client.get_left_wrist_frame()
             left_wrist_shape = client.get_left_wrist_shape()
             logger_mp.info(f"Left Wrist Camera FPS: {left_wrist_fps:.2f}")
@@ -150,7 +190,7 @@ if __name__ == "__main__":
             if left_wrist_img is not None:
                 cv2.imshow("Left Wrist Camera", left_wrist_img)
 
-        if client.has_right_wrist_cam():
+        if client.enable_right_wrist_zmq():
             right_wrist_img, right_wrist_fps = client.get_right_wrist_frame()
             right_wrist_shape = client.get_right_wrist_shape()
             logger_mp.info(f"Right Wrist Camera FPS: {right_wrist_fps:.2f}")

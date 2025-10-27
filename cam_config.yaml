@@ -5,13 +5,13 @@
 head_camera:
   # camera config
 
-  # if zmq_enable and webrtc_enable are both false, the camera will not start
+  # if enable_zmq and enable_webrtc are both false, the camera will not start
   # Set to true to enable ZMQ publishing, false to disable
-  zmq_enable: true
+  enable_zmq: true
   # Port to publish camera stream, e.g. zmq tcp://*:55555.  image_client.py should connect to the same port
   zmq_port : 55555
   # Set to true to enable WebRTC publishing, false to disable
-  webrtc_enable: true
+  enable_webrtc: true
   # Port for WebRTC signaling server
   webrtc_port : 60001
 
@@ -48,9 +48,9 @@ head_camera:
 # Left wrist camera configuration
 # =====================================================
 left_wrist_camera:
-  zmq_enable: true
+  enable_zmq: true
   zmq_port : 55556
-  webrtc_enable: false
+  enable_webrtc: false
   webrtc_port : 60002
   type: uvc
   image_shape: [480, 640]
@@ -63,9 +63,9 @@ left_wrist_camera:
 # Right wrist camera configuration
 # =====================================================
 right_wrist_camera:
-  zmq_enable: true
+  enable_zmq: true
   zmq_port : 55557
-  webrtc_enable: false
+  enable_webrtc: false
   webrtc_port: 60003
   type: uvc
   image_shape: [480, 640]
