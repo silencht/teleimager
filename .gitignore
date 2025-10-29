@@ -3,3 +3,7 @@
 *.pyc
 *.egg-info
 *.pem
+*.srl
+*.csr
+*.key
+*.cnf
