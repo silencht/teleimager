@@ -6,8 +6,8 @@ import numpy as np
 import uvc
 import yaml
 import time
-import zmq_msg
-import webrtc_msg
+from . import zmq_msg
+from . import webrtc_msg
 import threading
 import signal
 import functools
