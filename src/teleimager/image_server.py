@@ -16,10 +16,10 @@ import logging_mp
 logging_mp.basic_config(level=logging_mp.INFO)
 logger_mp = logging_mp.get_logger(__name__)
 
-# Resolve the absolute path of cam_config.yaml relative to this script
+# Resolve the absolute path of cam_config_server.yaml relative to this script
 CONFIG_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
-    "..", "..", "cam_config.yaml"
+    "..", "..", "cam_config_server.yaml"
 )
 CONFIG_PATH = os.path.normpath(CONFIG_PATH)
 

@@ -7,3 +7,4 @@
 *.csr
 *.key
 *.cnf
+*_client.yaml

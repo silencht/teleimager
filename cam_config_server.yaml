@@ -24,6 +24,7 @@ head_camera:
   # Image Format
   # image resolution: [height, width]
   image_shape: [480, 1280]
+  binocular: true
   # frame per second
   fps: 60
 
@@ -54,6 +55,7 @@ left_wrist_camera:
   webrtc_port : 60002
   type: uvc
   image_shape: [480, 640]
+  binocular: false
   fps: 60
   video_id: 2
   serial_number: 200901010001
@@ -69,6 +71,7 @@ right_wrist_camera:
   webrtc_port: 60003
   type: uvc
   image_shape: [480, 640]
+  binocular: false
   fps: 60
   video_id: 4
   serial_number: 200901010002

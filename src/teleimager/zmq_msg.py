@@ -23,9 +23,11 @@ from typing import Any, Dict, Optional, Tuple
 import zmq
 import numpy as np
 import cv2
+import yaml
+import os
 import time
 import logging_mp
-logger_mp = logging_mp.get_logger(__name__)
+logger_mp = logging_mp.get_logger(__name__, level=logging_mp.INFO)
 
 # ========================================================
 # Utility tools
@@ -434,19 +436,16 @@ class SubscriberManager:
 # response
 # ========================================================
 class Responser:
-    """Thread that owns a REP socket and handles requests.
-
-    Publishes `data` whenever a request is received.
-    """
-    def __init__(self, data, host: str = "0.0.0.0", port: int = 60000):
+    """ ZMQ REP socket to respond with camera configuration upon request."""
+    def __init__(self, cam_config, host: str = "0.0.0.0", port: int = 60000):
         """
         Args:
-            data: The data to send in response to requests.
+            cam_config: The cam_config to send in response to requests.
             host: Host/IP to bind.
             port: TCP port to bind.
             poll_timeout: Timeout in milliseconds for poll() to check for requests.
         """
-        self.data = data
+        self._cam_config = cam_config
         self._host = host
         self._port = port
         self._context = zmq.Context()
@@ -466,7 +465,7 @@ class Responser:
                 socks = dict(poller.poll(timeout=200))
                 if self._socket in socks and socks[self._socket] == zmq.POLLIN:
                     _ = self._socket.recv()  # receive request
-                    self._socket.send_json(self.data)
+                    self._socket.send_json(self._cam_config)
             except zmq.ZMQError as e:
                 if not self._running:
                     break  # normal exit when stopping
@@ -495,7 +494,8 @@ class Responser:
 # request
 # ========================================================
 class Requester:
-    """Request camera configuration from the server using a REQ socket."""
+    """ ZMQ REQ socket to request camera configuration from server. If server is unreachable,
+        try to load from local cam_config_client.yaml or cam_config_server.yaml."""
     def __init__(self, host: str, port: int):
         """
         Args:
@@ -511,26 +511,50 @@ class Requester:
 
         self._poller = zmq.Poller()
         self._poller.register(self._socket, zmq.POLLIN)
+
+        self._current_dir = os.path.dirname(os.path.abspath(__file__))
+        self._package_dir = os.path.abspath(os.path.join(self._current_dir, "../../"))
+        self._config_client_path = os.path.join(self._package_dir, "cam_config_client.yaml")
+        self._config_server_path = os.path.join(self._package_dir, "cam_config_server.yaml")
     # --------------------------------------------------------
     # public api
     # --------------------------------------------------------
     def request(self) -> Optional[Dict[str, Any]]:
-        """Send a request to the server and wait for a single response."""
+        cam_config = None
         try:
             msg = b"GET_DATA"
             self._socket.send(msg)
             socks = dict(self._poller.poll(timeout=1000))
+
             if self._socket in socks and socks[self._socket] == zmq.POLLIN:
-                return self._socket.recv_json()
+                cam_config = self._socket.recv_json()
+                if cam_config is not None:
+                    logger_mp.info(f"Received camera config from server {self._host}:{self._port}")
+                    with open(self._config_client_path, "w") as f:
+                        yaml.safe_dump(cam_config, f, sort_keys=False, allow_unicode=True)
+                    logger_mp.info(f"Saved camera config to local {self._config_client_path}")
             else:
-                logger_mp.warning(f"Request to {self._host}:{self._port} timed out.")
-                return None
-        except zmq.ZMQError as e:
-            logger_mp.error(f"ZMQError in Requester: {e}")
-            return None
+                logger_mp.warning(f"Request to {self._host}:{self._port} timed out or no response, using local config.")
+                if os.path.exists(self._config_client_path):
+                    try:
+                        with open(self._config_client_path, "r") as f:
+                            cam_config = yaml.safe_load(f)
+                        logger_mp.info(f"Loaded camera config from local {self._config_client_path}")
+                    except Exception as e:
+                        logger_mp.warning(f"Failed to load local cam_config_client.yaml: {e}")
+                elif os.path.exists(self._config_server_path):
+                    try:
+                        with open(self._config_server_path, "r") as f:
+                            cam_config = yaml.safe_load(f)
+                        logger_mp.info(f"Loaded camera config from local {self._config_server_path}")
+                    except Exception as e:
+                        logger_mp.warning(f"Failed to load local cam_config_server.yaml: {e}")
+                else:
+                    logger_mp.error("No camera configuration file found locally.")
+            return cam_config
         except Exception as e:
             logger_mp.error(f"Unexpected error in Requester: {e}")
-            return None
+            return cam_config
 
     def close(self):
         """Close the requester socket and terminate context."""
