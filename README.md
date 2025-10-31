@@ -2,66 +2,63 @@
 
 ## 1. Image Server
 
-This module provides an image server that captures video streams from multiple cameras (UVC、OpenCV and RealSense) and publishes the frames over a network using ZeroMQ. It is designed to support teleoperation applications where real-time video streaming is essential. 
+This module provides an image server that captures video streams from multiple cameras (UVC、OpenCV and RealSense) and publishes the frames over a network using ZeroMQ or WebRTC. It is designed to support teleoperation applications where real-time video streaming is essential.
 
 All user-callable functions are listed below the `# public api` comment in the code.
 
 ### 1.0 ✨ Features
 
 - 📸 Supports multiple UVC, OpenCV and Intel RealSense cameras.
-- 📢 Publishes video frames using ZeroMQ PUB-SUB pattern.
-- 🚧 (TODO)  LocalHost shared memory mode for low-latency frame access.
-- 💬 Response image configuration via ZeroMQ REQ-REP pattern.
+- 📢 Publishes video frames using **ZeroMQ PUB-SUB** pattern.
+- 📢 Publishes video frames using **WebRTC** pattern.
+- 💬 Response image configuration via **ZeroMQ REQ-REP** pattern.
 - 🆔 Multi Camera identifiers (choose one or more): physical path, serial number and video device path.
 - ⚙️ Configurable frame resolution and frame rate.
 - 🚀 Efficient frame handling using a triple ring buffer.
+- 🚧 (TODO) LocalHost shared memory mode for low-latency frame access.
 
 ### 1.1 📥 Environment Setup
 
-You can set up TeleImager using either a Conda environment or the system (base) environment.
-Both methods work — choose whichever fits your workflow better.
+0. Install miniconda3
 
-#### 1.1.1 Conda Environment
-1. Clone the repository:
     ```bash
-    git clone https://github.com/silencht/teleimager.git
-    cd teleimager
+    # for jetson orin nx (arm)
+    unitree@ubuntu:~$ mkdir -p ~/miniconda3
+    unitree@ubuntu:~$ wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh -O ~/miniconda3/miniconda.sh
+    unitree@ubuntu:~$ bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+    unitree@ubuntu:~$ rm ~/miniconda3/miniconda.sh
+    unitree@ubuntu:~$ source ~/miniconda3/bin/activate
+    (base) unitree@ubuntu:~$ conda init --all
     ```
-2. Create and activate a Python virtual environment (optional but recommended):
+
+1. Create and activate a Python virtual environment (optional but recommended):
+
     ```bash
-    conda create -n teleimager python=3.10 -y
-    conda activate teleimager
+    (base) unitree@ubuntu:~$ conda create -n teleimager python=3.10 -y
+    (base) unitree@ubuntu:~$ conda activate teleimager
     ```
-3. Install the required packages:
+2. Install the repo and required packages:
+
     ```bash
-    sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev 
-    pip install -e .
+    (teleimager) unitree@ubuntu:~$ sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev
+    (teleimager) unitree@ubuntu:~$ git clone https://github.com/silencht/teleimager.git
+    (teleimager) unitree@ubuntu:~$ cd teleimager
+    (teleimager) unitree@ubuntu:~/teleimager$ pip install -e .
     ```
-#### 1.1.2 Base Environment
-1. Clone the repository:
-    ```bash
-    git clone https://github.com/silencht/teleimager.git
-    cd teleimager
-    ```
-2. Install the required packages:
-   ```bash
-    sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev
-    sudo pip install --upgrade pip setuptools wheel
-    pip install .
-   ```
 
 ### 1.2 🔍 Finding connected cameras
 
-To discover connected cameras, run the following command in the terminal. 
-`sudo $(which python)` is used to ensure the script has the necessary permissions to access camera devices. And `--cf` means "camera find". 
+To discover connected cameras, run the following command in the terminal.
+`sudo $(which python)` is used to ensure the script has the necessary permissions to access camera devices. And `--cf` means "camera find".
+
 ```bash
-(teleimager) unitree@unitree:~/image_server$ sudo $(which python) image_server.py --cf
+(teleimager) unitree@ubuntu:~$ sudo $(which python) -m teleimager.image_server --cf
 ```
 
 You should see output similar to the following, which lists all detected UVC cameras and their details:
 
 ```bash
-(teleimager) unitree@unitree:~/xr_teleoperate/teleop/image_server$ sudo $(which python) image_server.py --cf
+(teleimager) unitree@ubuntu:~$ sudo $(which python) -m teleimager.image_server --cf
 10:24:35:849900 INFO     ======================= Camera Discovery Start ================================== image_server.py:216
 10:24:35:851008 INFO     Found video devices: ['/dev/video0', '/dev/video1', '/dev/video2', '/dev/video3', image_server.py:217
                          '/dev/video4', '/dev/video5']                                                                        
@@ -132,6 +129,7 @@ You should see output similar to the following, which lists all detected UVC cam
 If there exists Intel RealSense cameras, you will also see the RealSense camera discovery results like below:
 
 ```bash
+# (teleimager) unitree@ubuntu:~$ sudo $(which python) -m teleimager.image_server --cf --rs
 11:30:49:303683 INFO     ----------------------- Realsense Cameras ----------------------------------
 11:30:49:303699 INFO     RealSense serial numbers: ['141722079879']
 11:30:49:303712 INFO     RealSense video paths:
@@ -141,10 +139,11 @@ If there exists Intel RealSense cameras, you will also see the RealSense camera 
 ```
 
 ### 1.3 📡 Starting the Image Server
-According to the camera discovery results up, you can fill `cam_config.yaml` with the results. Here is an example configuration file,
+
+According to the camera discovery results up, you can fill `cam_config_server.yaml` with the results. Here is an example configuration file,
 
 ```yaml
-# cam_config.yaml, All parameters are explained in the comments.
+# cam_config_server.yaml, All parameters are explained in the comments.
 # =====================================================
 # Head camera configuration
 # =====================================================
@@ -152,11 +151,15 @@ According to the camera discovery results up, you can fill `cam_config.yaml` wit
 head_camera:
   # camera configuration
 
-  # Set to true to enable this camera, false to disable
-  enable: true
-
-  # Port to publish camera stream, i.e. zmq tcp://*:55555.  image_client.py should connect to the same port
-  port : 55555
+  # if enable_zmq and enable_webrtc are both false, the camera will not start
+  # Set to true to enable ZMQ publishing, false to disable
+  enable_zmq: true
+  # Port to publish camera stream, e.g. zmq tcp://*:55555.  image_client.py should connect to the same port
+  zmq_port : 55555
+  # Set to true to enable WebRTC publishing, false to disable
+  enable_webrtc: true
+  # Port for WebRTC signaling server
+  webrtc_port : 60001
 
   # Type of camera:
   #   - "opencv"    → opencv driver
@@ -167,7 +170,8 @@ head_camera:
   # Image Format
   # image resolution: [height, width]
   image_shape: [480, 1280]
-
+  # Manually verify whether the camera is stereo.
+  binocular: true
   # frame per second
   fps: 60
 
@@ -203,10 +207,13 @@ head_camera:
 # Left wrist camera configuration
 # =====================================================
 left_wrist_camera:
-  enable: True
-  port : 55556
+  enable_zmq: true
+  zmq_port : 55556
+  enable_webrtc: false
+  webrtc_port : 60002
   type: uvc
   image_shape: [480, 640]
+  binocular: false
   fps: 60
   # initialize UVC Camera3. 
   # first try to use physical_path to find the camera,
@@ -220,36 +227,43 @@ left_wrist_camera:
 # Right wrist camera configuration
 # =====================================================
 right_wrist_camera:
-  enable: True
-  port : 55557
+  enable_zmq: true
+  zmq_port : 55557
+  enable_webrtc: false
+  webrtc_port: 60003
   type: uvc
   image_shape: [480, 640]
+  binocular: false
   fps: 60
-  video_id: 4
+  video_id: 0
   serial_number: 200901010002
   physical_path: null
 ```
 
-
-
 ## 2. Image Client
+
 This module provides an image client that connects to the image server to receive and display video streams from multiple cameras. It is designed to work with the image server for teleoperation applications.
 
 All user-callable functions are listed below the `# public api` comment in the code.
 
 ### 2.1 🎯 Usage
+
 When the image server is running, you can start the image client to receive and display the video streams. Run the following command in another terminal:
+
 ```bash
-python image_client.py
+sudo $(which python) -m teleimager.image_client
 ```
+
 Maybe you need to change the host ip and camera port in `image_client.py` to match the server settings.
 For example, if the server is running on Unitree G1 Jetson Nx machine with IP address `192.168.123.164`, you should change the host in `image_client.py` like this:
+
 ```python
 if __name__ == "__main__":
     # Example usage with three camera streams
     client = ImageClient(host='192.168.123.164')  # Change to the server's IP address
 #...
 ```
+
 > Remember to have the **opencv-python** library installed in your environment.
 
 Then you should see the video streams from the cameras in separate OpenCV windows.
