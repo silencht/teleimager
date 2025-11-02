@@ -22,7 +22,7 @@ All user-callable functions are listed below the `# public api` comment in the c
 0. Install miniconda3
 
     ```bash
-    # for jetson orin nx (arm)
+    # for jetson orin nx (ARM architecture)
     unitree@ubuntu:~$ mkdir -p ~/miniconda3
     unitree@ubuntu:~$ wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-aarch64.sh -O ~/miniconda3/miniconda.sh
     unitree@ubuntu:~$ bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
@@ -31,7 +31,7 @@ All user-callable functions are listed below the `# public api` comment in the c
     (base) unitree@ubuntu:~$ conda init --all
     ```
 
-1. Create and activate a Python virtual environment (optional but recommended):
+1. Create and activate a conda environment:
 
     ```bash
     (base) unitree@ubuntu:~$ conda create -n teleimager python=3.10 -y
@@ -238,6 +238,14 @@ right_wrist_camera:
   video_id: 0
   serial_number: 200901010002
   physical_path: null
+```
+Finally, start the image server
+
+```bash
+sudo $(which python) -m teleimager.image_server
+
+# If there exists Intel RealSense cameras, and you want to use
+sudo $(which python) -m teleimager.image_server --rs
 ```
 
 ## 2. Image Client
