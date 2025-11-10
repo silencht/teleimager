@@ -45,9 +45,9 @@ All user-callable functions are listed below the `# public api` comment in the c
     (teleimager) unitree@ubuntu:~$ cd teleimager
     (teleimager) unitree@ubuntu:~/teleimager$ pip install -e .
     ```
-
 ### 1.2 🔍 Finding connected cameras
 
+First to prepare the robot, go into "Device - Service Status" on the UnitreeExplore App and turn off video_hub_pc4 to release the uvcvideo library occupation.  
 To discover connected cameras, run the following command in the terminal.
 `sudo $(which python)` is used to ensure the script has the necessary permissions to access camera devices. And `--cf` means "camera find".
 
