@@ -11,7 +11,7 @@ head_camera:
   # Port to publish camera stream, e.g. zmq tcp://*:55555.  image_client.py should connect to the same port
   zmq_port : 55555
   # Set to true to enable WebRTC publishing, false to disable
-  enable_webrtc: true
+  enable_webrtc: false
   # Port for WebRTC signaling server
   webrtc_port : 60001
 
@@ -19,14 +19,15 @@ head_camera:
   #   - "opencv"    → opencv driver
   #   - "realsense" → pyrealsense2 driver
   #   - "uvc"       → pyuvc driver
-  type: uvc
+  #   - "zed"       → stereolabs zed driver
+  type: zed
 
   # Image Format
   # image resolution: [height, width]
-  image_shape: [480, 1280]
-  binocular: true
+  image_shape: [720, 1280]
+  binocular: false
   # frame per second
-  fps: 60
+  fps: 30
 
   # Camera identifiers (choose one or more):
   #   - video_id: X        → /dev/videoX  (e.g. 0 → /dev/video0)
@@ -42,14 +43,14 @@ head_camera:
   #   - type "opencv":    supports video_id, serial_number, physical_path
   #   - type "uvc":       supports video_id, serial_number, physical_path
   video_id: 0
-  serial_number: 01.00.00
+  serial_number: 100.01.01
   physical_path: null
 
 # =====================================================
 # Left wrist camera configuration
 # =====================================================
 left_wrist_camera:
-  enable_zmq: true
+  enable_zmq: false
   zmq_port : 55556
   enable_webrtc: false
   webrtc_port : 60002
@@ -58,14 +59,14 @@ left_wrist_camera:
   binocular: false
   fps: 60
   video_id: 2
-  serial_number: 200901010001
+  serial_number: null
   physical_path: null
 
 # =====================================================
 # Right wrist camera configuration
 # =====================================================
 right_wrist_camera:
-  enable_zmq: true
+  enable_zmq: false
   zmq_port : 55557
   enable_webrtc: false
   webrtc_port: 60003
@@ -74,5 +75,31 @@ right_wrist_camera:
   binocular: false
   fps: 60
   video_id: 4
-  serial_number: 200901010002
+  serial_number: null
   physical_path: null
+# =====================================================
+# ZED camera configuration example
+# =====================================================
+# zed_camera:
+#   enable_zmq: true
+#   zmq_port : 55558
+#   enable_webrtc: false
+#   webrtc_port: 60004
+#   type: zed
+#   # ZED Resolution & FPS Options (set image_shape height to select resolution):
+#   # - HD2K:   image_shape: [1242, 2208], fps: 15
+#   # - HD1080: image_shape: [1080, 1920], fps: 30 or 15
+#   # - HD720:  image_shape: [720, 1280],  fps: 60, 30, or 15
+#   # - VGA:    image_shape: [376, 672],   fps: 100, 60, 30, or 15
+#   image_shape: [720, 1280]
+#   binocular: false
+#   fps: 30
+#   # For ZED cameras, only serial_number is supported
+#   video_id: null
+#   serial_number: 12345678  # Replace with your ZED camera serial number
+#   physical_path: null
+#
+# Note: To use ZED cameras, you must:
+#  1. Install ZED SDK from https://www.stereolabs.com/developers/release/
+#  2. Start the server with the --zed flag: teleimager-server --zed
+#  3. Run `teleimager-server --cf --zed` to discover connected ZED cameras

@@ -35,7 +35,7 @@ class CameraFinder:
     dev_info: extra info from uvc
     sn: serial number of the camera
     """
-    def __init__(self, realsense_enable=False, verbose=False):
+    def __init__(self, realsense_enable=False, zed_enable=False, verbose=False):
         self.verbose = verbose
         # uvc
         self._reload_uvc_driver()
@@ -43,6 +43,13 @@ class CameraFinder:
         self.uid_map = {dev["uid"]: dev for dev in self.uvc_devices}
         # all video devices
         self.video_paths = self._list_video_paths()
+        # zed
+        if zed_enable:
+            self.zed_serial_numbers = self._list_zed_serial_numbers()
+            self.zed_video_paths = []
+        else:
+            self.zed_serial_numbers = []
+            self.zed_video_paths = []
         # realsense
         if realsense_enable:
             self.rs_serial_numbers = self._list_realsense_serial_numbers()
@@ -96,7 +103,7 @@ class CameraFinder:
         return [f"/dev/{x}" for x in sorted(os.listdir(base)) if x.startswith("video")]
 
     def _list_uvc_rgb_video_paths(self):
-        return [p for p in self.video_paths if self._is_like_rgb(p) and p not in self.rs_video_paths]
+        return [p for p in self.video_paths if self._is_like_rgb(p) and p not in self.rs_video_paths and p not in self.zed_video_paths]
 
     def _list_realsense_video_paths(self):
         def _read_text(path):
@@ -160,6 +167,22 @@ class CameraFinder:
                 continue
         return serials
 
+    def _list_zed_serial_numbers(self):
+        try:
+            import pyzed.sl as sl
+        except ImportError:
+            logger_mp.warning(
+                "pyzed is not installed. ZED camera discovery is disabled. "
+                "To enable ZED support, install the ZED SDK and pyzed wrapper from: "
+                "\n\n    https://www.stereolabs.com/developers/release/\n"
+            )
+            return []
+        cameras = sl.Camera.get_device_list()
+        serials = []
+        for cam_info in cameras:
+            serials.append(str(cam_info.serial_number))
+        return serials
+
     def _get_ppath_from_vpath(self, video_path):
         sysfs_path = f"/sys/class/video4linux/{os.path.basename(video_path)}/device"
         return os.path.realpath(sysfs_path)
@@ -193,6 +216,9 @@ class CameraFinder:
     # --------------------------------------------------------
     # public api
     # --------------------------------------------------------
+    def is_zed_serial_exist(self, serial_number):
+        return str(serial_number) in self.zed_serial_numbers
+
     def is_rs_serial_exist(self, serial_number):
         return str(serial_number) in self.rs_serial_numbers
 
@@ -532,6 +558,120 @@ class UVCCamera(BaseCamera):
         # self.cap = None
         logger_mp.info(f"[UVCCamera] Released {self._cam_topic}")
 
+class ZEDCamera(BaseCamera):
+    def __init__(self, cam_topic, serial_number, img_shape, fps,
+                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666):
+        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+        self._serial_number = serial_number
+        
+        try:
+            import pyzed.sl as sl
+        except ImportError:
+            raise RuntimeError(
+                "pyzed is not installed. To enable ZED support, install the ZED SDK and pyzed wrapper from: "
+                "\n\n    https://www.stereolabs.com/developers/release/\n"
+            )
+        
+        try:
+            # Store sl module for later use
+            self.sl = sl
+            
+            # Create Camera object
+            self.zed = sl.Camera()
+            
+            # Determine resolution based on image height
+            height = img_shape[0]
+            resolution_map = {
+                1242: (sl.RESOLUTION.HD2K, [15], "HD2K (2208×1242)"),
+                1080: (sl.RESOLUTION.HD1080, [30, 15], "HD1080 (1920×1080)"),
+                720: (sl.RESOLUTION.HD720, [60, 30, 15], "HD720 (1280×720)"),
+                376: (sl.RESOLUTION.VGA, [100, 60, 30, 15], "VGA (672×376)")
+            }
+            
+            if height not in resolution_map:
+                available = ", ".join([f"{h}px" for h in sorted(resolution_map.keys(), reverse=True)])
+                raise ValueError(
+                    f"[ZEDCamera] Unsupported image height {height}. "
+                    f"ZED cameras support heights: {available}. "
+                    f"Please update image_shape in your config."
+                )
+            
+            zed_resolution, supported_fps_list, res_name = resolution_map[height]
+            
+            if fps not in supported_fps_list:
+                raise ValueError(
+                    f"[ZEDCamera] FPS {fps} not supported for {res_name}. "
+                    f"Supported FPS values: {supported_fps_list}"
+                )
+            
+            # Set configuration parameters
+            init_params = sl.InitParameters()
+            init_params.camera_resolution = zed_resolution
+            init_params.camera_fps = fps
+            init_params.set_from_serial_number(int(serial_number))
+            
+            logger_mp.info(f"[ZEDCamera] Using {res_name} @ {fps} FPS")
+            
+            # Open the camera
+            err = self.zed.open(init_params)
+            if err != sl.ERROR_CODE.SUCCESS:
+                raise RuntimeError(f"[ZEDCamera] Failed to open ZED camera with serial {serial_number}: {err}")
+            
+            # Verify serial number
+            zed_serial = self.zed.get_camera_information().serial_number
+            if str(zed_serial) != str(serial_number):
+                logger_mp.warning(f"[ZEDCamera] Serial mismatch: requested {serial_number}, got {zed_serial}")
+            
+            # Create Mat object to store images
+            self.image = sl.Mat()
+            
+            logger_mp.info(self.__str__())
+            
+        except Exception as e:
+            logger_mp.error(f"[ZEDCamera] Failed to initialize: {e}")
+            raise
+    
+    def __str__(self):
+        return (
+            f"[ZEDCamera: {self._cam_topic}] initialized with "
+            f"{self._img_shape[0]}x{self._img_shape[1]} @ {self._fps} FPS.\n"
+            f"ZMQ: {'enabled, zmq_port=' + str(self._zmq_port) if self._enable_zmq else 'disabled'}; "
+            f"WebRTC: {'enabled, webrtc_port=' + str(self._webrtc_port) if self._enable_webrtc else 'disabled'}"
+        )
+    
+    def _update_frame(self):
+        # Grab an image
+        if self.zed.grab() == self.sl.ERROR_CODE.SUCCESS:
+            # Retrieve the left image (rectified RGB)
+            self.zed.retrieve_image(self.image, self.sl.VIEW.LEFT)
+            
+            # Convert to numpy/OpenCV format (already in BGR)
+            bgr_numpy = self.image.get_data()
+            
+            # Resize if necessary
+            if bgr_numpy.shape[:2] != (self._img_shape[0], self._img_shape[1]):
+                bgr_numpy = cv2.resize(bgr_numpy, (self._img_shape[1], self._img_shape[0]))
+            
+            if self._enable_webrtc:
+                self._webrtc_buffer.write(bgr_numpy)
+            
+            if self._enable_zmq:
+                ret, jpeg_bytes = cv2.imencode('.jpg', bgr_numpy, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if ret:
+                    self._zmq_buffer.write(jpeg_bytes.tobytes())
+            
+            if not self._ready.is_set():
+                self._ready.set()
+    
+    def release(self):
+        try:
+            if hasattr(self, 'zed') and self.zed:
+                self.zed.close()
+        except Exception:
+            pass
+        self.zed = None
+        logger_mp.info(f"[ZEDCamera] Released {self._cam_topic}")
+
 class OpenCVCamera(BaseCamera):
     def __init__(self, cam_topic, video_path, img_shape, fps, 
                  enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666):
@@ -589,12 +729,13 @@ class OpenCVCamera(BaseCamera):
 # image server
 # ========================================================
 class ImageServer:
-    def __init__(self, cam_config, realsense_enable=False, camera_finder_verbose=False):
+    def __init__(self, cam_config, realsense_enable=False, zed_enable=False, camera_finder_verbose=False):
         self._cam_config = cam_config
         self._realsense_enable = realsense_enable
+        self._zed_enable = zed_enable
         self._stop_event = threading.Event()
         self._cameras: dict[str, BaseCamera] = {}
-        self._cam_finder = CameraFinder(realsense_enable, camera_finder_verbose)
+        self._cam_finder = CameraFinder(realsense_enable, zed_enable, camera_finder_verbose)
         self._responser = zmq_msg.Responser(self._cam_config)
         self._zmq_publisher_manager = zmq_msg.PublisherManager.get_instance()
         self._webrtc_publisher_manager = webrtc_msg.PublisherManager.get_instance()
@@ -659,6 +800,17 @@ class ImageServer:
                     else:
                         self._cameras[cam_topic] = RealSenseCamera(cam_topic, serial_number, img_shape, fps,
                                                                    enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+
+                elif cam_type == "zed":
+                    if not self._zed_enable:
+                        self._cameras[cam_topic] = None
+                        logger_mp.error(f"[Image Server] Please start image server with the '--zed' flag to support ZED {cam_topic}.")
+                    elif not self._cam_finder.is_zed_serial_exist(serial_number):
+                        self._cameras[cam_topic] = None
+                        logger_mp.error(f"[Image Server] Cannot find ZEDCamera for {cam_topic}")
+                    else:
+                        self._cameras[cam_topic] = ZEDCamera(cam_topic, serial_number, img_shape, fps,
+                                                              enable_zmq, zmq_port, enable_webrtc, webrtc_port)
 
                 elif cam_type == "uvc":
                     uid = None
@@ -871,6 +1023,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cf', action = 'store_true', help = 'Enable camera found mode, print all connected cameras info')
     parser.add_argument('--rs', action = 'store_true', help = 'Enable RealSense camera mode. Otherwise only find UVC/OpenCV cameras.')
+    parser.add_argument('--zed', action = 'store_true', help = 'Enable ZED camera mode. Otherwise only find UVC/OpenCV cameras.')
     args = parser.parse_args()
 
     # if enable camera finder mode, just print cameras info and exit
@@ -887,7 +1040,7 @@ def main():
         exit(1)
 
     # start image server
-    server = ImageServer(cam_config, realsense_enable=args.rs, camera_finder_verbose=False)
+    server = ImageServer(cam_config, realsense_enable=args.rs, zed_enable=args.zed, camera_finder_verbose=False)
     server.start()
 
     # graceful shutdown handling
