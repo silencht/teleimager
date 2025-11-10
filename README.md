@@ -283,12 +283,22 @@ teleimager-client --host 127.0.0.1
 ```
 
 Maybe you need to change the host ip to match the server settings.
-For example, if the server is running on Unitree G1 Jetson Nx machine with IP address `192.168.123.164`, you should change the host in `image_client.py` like this:
+For example, if the server is running on Unitree G1 Jetson Nx machine with IP address `192.168.123.164`, you should run:
+
+```bash
+python -m teleimager.image_client --host 192.168.123.164
+# or same as
+teleimager-client --host 192.168.123.164
+```
+
+Then you should see the ZMQ video streams from the cameras in separate OpenCV windows.
+
+WebRTC video streams can be viewed in a web browser by navigating to `https://<host_ip>:<webrtc_port>`. Like this:
+```
+https://192.168.123.164:60001
+```
 
 > Remember to have the **opencv-python** library installed in your environment.
-
-Then you should see the video streams from the cameras in separate OpenCV windows.
-
 
 
 ## 3. 🚀🚀🚀 Automatic Startup Service
