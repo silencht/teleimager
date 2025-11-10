@@ -54,9 +54,15 @@ class ImageClient:
         self._subscriber_manager.close()
         logger_mp.info("Image client has been closed.")
 
-if __name__ == "__main__":
+def main():
+    # command line args
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--host', type=str, default='192.168.123.164', help='IP address of image server')
+    args = parser.parse_args()
+
     # Example usage with three camera streams
-    client = ImageClient(host='127.0.0.1')  # Change to '127.0.0.1' for local test
+    client = ImageClient(host=args.host)
     cam_config = client.get_cam_config()
 
     running = True
@@ -91,6 +97,6 @@ if __name__ == "__main__":
             cv2.destroyAllWindows()
         # Small delay to prevent excessive CPU usage
         time.sleep(0.002)
-        
 
-        
+if __name__ == "__main__":
+    main()

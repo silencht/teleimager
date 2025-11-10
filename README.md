@@ -45,20 +45,28 @@ All user-callable functions are listed below the `# public api` comment in the c
     (teleimager) unitree@ubuntu:~$ cd teleimager
     (teleimager) unitree@ubuntu:~/teleimager$ pip install -e .
     ```
+3. Running as a non-root user, and add permissions for video devices:
+    ```bash
+    bash setup_uvc.sh
+    ```
 
 ### 1.2 🔍 Finding connected cameras
 
 To discover connected cameras, run the following command in the terminal.
-`sudo $(which python)` is used to ensure the script has the necessary permissions to access camera devices. And `--cf` means "camera find".
+And `--cf` means "camera find".
 
 ```bash
-(teleimager) unitree@ubuntu:~$ sudo $(which python) -m teleimager.image_server --cf
+# Both commands start the Teleimager image server; the first runs the module directly with Python,
+# while the second uses the installed command-line entry point. They are functionally equivalent.
+(teleimager) unitree@ubuntu:~$ python -m teleimager.image_server --cf
+# or same as
+(teleimager) unitree@ubuntu:~$ teleimager-server --cf
 ```
 
 You should see output similar to the following, which lists all detected UVC cameras and their details:
 
 ```bash
-(teleimager) unitree@ubuntu:~$ sudo $(which python) -m teleimager.image_server --cf
+(teleimager) unitree@ubuntu:~$ python -m teleimager.image_server --cf
 10:24:35:849900 INFO     ======================= Camera Discovery Start ================================== image_server.py:216
 10:24:35:851008 INFO     Found video devices: ['/dev/video0', '/dev/video1', '/dev/video2', '/dev/video3', image_server.py:217
                          '/dev/video4', '/dev/video5']                                                                        
@@ -129,7 +137,9 @@ You should see output similar to the following, which lists all detected UVC cam
 If there exists Intel RealSense cameras, you will also see the RealSense camera discovery results like below:
 
 ```bash
-# (teleimager) unitree@ubuntu:~$ sudo $(which python) -m teleimager.image_server --cf --rs
+# (teleimager) unitree@ubuntu:~$ python -m teleimager.image_server --cf --rs
+# or same as
+# (teleimager) unitree@ubuntu:~$ teleimager-server --cf --rs
 11:30:49:303683 INFO     ----------------------- Realsense Cameras ----------------------------------
 11:30:49:303699 INFO     RealSense serial numbers: ['141722079879']
 11:30:49:303712 INFO     RealSense video paths:
@@ -242,11 +252,18 @@ right_wrist_camera:
 Finally, start the image server
 
 ```bash
-sudo $(which python) -m teleimager.image_server
-
+python -m teleimager.image_server
 # If there exists Intel RealSense cameras, and you want to use
-sudo $(which python) -m teleimager.image_server --rs
+python -m teleimager.image_server --rs
+
+# or same as
+teleimager-server
+# If there exists Intel RealSense cameras, and you want to use
+teleimager-server --rs
 ```
+
+
+
 
 ## 2. Image Client
 
@@ -259,19 +276,28 @@ All user-callable functions are listed below the `# public api` comment in the c
 When the image server is running, you can start the image client to receive and display the video streams. Run the following command in another terminal:
 
 ```bash
-sudo $(which python) -m teleimager.image_client
+python -m teleimager.image_client
+
+# or same as
+teleimager-client --host 127.0.0.1
 ```
 
-Maybe you need to change the host ip and camera port in `image_client.py` to match the server settings.
+Maybe you need to change the host ip to match the server settings.
 For example, if the server is running on Unitree G1 Jetson Nx machine with IP address `192.168.123.164`, you should change the host in `image_client.py` like this:
-
-```python
-if __name__ == "__main__":
-    # Example usage with three camera streams
-    client = ImageClient(host='192.168.123.164')  # Change to the server's IP address
-#...
-```
 
 > Remember to have the **opencv-python** library installed in your environment.
 
 Then you should see the video streams from the cameras in separate OpenCV windows.
+
+
+
+## 3. 🚀🚀🚀 Automatic Startup Service
+
+After completing the above setup and configuration, and successfully testing the image server and client, 
+you can configure the image server to start automatically on system boot by running the following script:
+
+```bash
+bash setup_autostart.sh
+```
+
+Follow the prompts in the script to complete your configuration. 

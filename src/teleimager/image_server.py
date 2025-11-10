@@ -846,21 +846,20 @@ def signal_handler(server, signum, frame):
     logger_mp.info(f"[Image Server] Received signal {signum}, initiating graceful shutdown...")
     server.stop()
 
-
-if __name__ == "__main__":
+def main():
     logger_mp.info(
         "\n====================== Image Server Startup Guide ======================\n"
         "Please first read this repo's README.md to learn how to configure and use the teleimager.\n"
         "To discover connected cameras, run the following command:\n"
         "\n"
-        "    sudo $(which python) image_server.py --cf\n"
+        "    teleimager-server --cf\n"
         "\n"
         "The '--cf' flag means 'camera find'.\n"
         "This will list all detected cameras and their details (video paths, serial numbers and physical path etc.).\n"
         "Use that information to fill in your 'cam_config.yaml' file.\n"
         "Once configured, you can start the image server with:\n"
         "\n"
-        "    sudo $(which python) image_server.py\n"
+        "    teleimager-server\n"
         "\n"
         "Note:\n"
         " - If you have RealSense cameras, add the '--rs' flag to enable RealSense support.\n"
@@ -901,3 +900,6 @@ if __name__ == "__main__":
     # usbhub plugout may cause block process exit, no better solution for now
     time.sleep(0.5)
     os.killpg(os.getpgrp(), 9)
+
+if __name__ == "__main__":
+    main()
