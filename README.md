@@ -60,7 +60,7 @@ All user-callable functions are listed below the `# public api` comment in the c
     You can tell teleimager where to find the certificate files using either environment variables or a user config directory.
     Pick **one** of the two setup methods below.
     
-    1. Environment Variable Configuration (Optional)
+    1. User Configuration Directory (Recommended)
     
        ```bash
        # this repo belongs to xr_teleoperate, so we use its config dir
@@ -68,7 +68,7 @@ All user-callable functions are listed below the `# public api` comment in the c
        cp cert.pem key.pem ~/.config/xr_teleoperate/
        ```
     
-    2. User Configuration Directory (Optional)
+    2. Environment Variable Configuration (Optional)
     
        ```bash
        # This makes the configuration persistent for future terminal sessions.
