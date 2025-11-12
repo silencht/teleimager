@@ -11,16 +11,24 @@ import numpy as np
 from typing import Dict, Optional, Tuple, Any
 import ssl
 import os
-CERT_PEM_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "..", "..", "cert.pem"
-)
-KEY_PEM_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "..", "..", "key.pem"
-)
-CERT_PEM_PATH = os.path.normpath(CERT_PEM_PATH)
-KEY_PEM_PATH = os.path.normpath(KEY_PEM_PATH)
+from pathlib import Path
+
+# current module directory
+module_dir = Path(__file__).resolve().parent.parent.parent
+default_cert = module_dir / "cert.pem"
+default_key = module_dir / "key.pem"
+# environment variable overrides
+env_cert = os.getenv("XR_TELEOP_CERT")
+env_key = os.getenv("XR_TELEOP_KEY")
+# user configured paths take precedence
+user_config_dir = Path.home() / ".config" / "xr_teleoperate"
+user_cert = user_config_dir / "cert.pem"
+user_key = user_config_dir / "key.pem"
+CERT_PEM_PATH = Path(env_cert or (user_cert if user_cert.exists() else default_cert))
+KEY_PEM_PATH = Path(env_key or (user_key if user_key.exists() else default_key))
+CERT_PEM_PATH = CERT_PEM_PATH.resolve()
+KEY_PEM_PATH = KEY_PEM_PATH.resolve()
+
 import logging_mp
 logger_mp = logging_mp.get_logger(__name__)
 

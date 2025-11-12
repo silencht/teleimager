@@ -2,7 +2,7 @@
 
 ## 1. Image Server
 
-This module provides an image server that captures video streams from multiple cameras (UVC、OpenCV and RealSense) and publishes the frames over a network using ZeroMQ or WebRTC. It is designed to support teleoperation applications where real-time video streaming is essential.
+This module provides an image server that captures video streams from multiple cameras (UVC、OpenCV and RealSense) and publishes the frames over a network using ZeroMQ or WebRTC. It is designed to support teleoperation applications where real-time video streaming is essential. It be used in [xr_teleoperate](https://github.com/unitreerobotics/xr_teleoperate) project to provide video streams for teleoperation now.
 
 All user-callable functions are listed below the `# public api` comment in the code.
 
@@ -37,6 +37,7 @@ All user-callable functions are listed below the `# public api` comment in the c
     (base) unitree@ubuntu:~$ conda create -n teleimager python=3.10 -y
     (base) unitree@ubuntu:~$ conda activate teleimager
     ```
+    
 2. Install the repo and required packages:
 
     ```bash
@@ -45,10 +46,38 @@ All user-callable functions are listed below the `# public api` comment in the c
     (teleimager) unitree@ubuntu:~$ cd teleimager
     (teleimager) unitree@ubuntu:~/teleimager$ pip install -e .
     ```
+    
 3. Running as a non-root user, and add permissions for video devices:
     ```bash
     bash setup_uvc.sh
     ```
+
+4. Configure Certificate Paths (Choose One Method)
+
+    If you plan to use WebRTC for video streaming, you need to set up SSL/TLS certificates for secure communication.
+    You can tell teleimager where to find the certificate files using either environment variables or a user config directory.
+    This configuaration could be shared with [televuer](https://github.com/silencht/televuer) module in [xr_teleoperate](https://github.com/unitreerobotics/xr_teleoperate) repo.
+    
+    1. Environment Variable Configuration (Optional)
+    
+       ```bash
+       # This makes the configuration persistent for future terminal sessions.
+       echo 'export XR_TELEOP_CERT="your_file_path/cert.pem"' >> ~/.bashrc
+       echo 'export XR_TELEOP_KEY="your_file_path/key.pem"' >> ~/.bashrc
+       source ~/.bashrc
+       ```
+    
+    2. User Configuration Directory (Optional)
+    
+       ```bash
+       # this repo belongs to xr_teleoperate, so we use its config dir
+       mkdir -p ~/.config/xr_teleoperate/
+       cp cert.pem key.pem ~/.config/xr_teleoperate/
+       ```
+    
+    3. Default Behavior
+    
+       If neither of the above methods is used, teleimager will look for the certificate files from default module paths.
 
 ### 1.2 🔍 Finding connected cameras
 
