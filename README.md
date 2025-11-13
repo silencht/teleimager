@@ -225,6 +225,7 @@ head_camera:
   #
   # Notes:
   #   - type "realsense": supports serial_number only (but a RealSense can also be used as opencv/uvc if desired)
+  #                       multiple RealSense devices on the same USB hub are not supported, as they share the same physical address.
   #   - type "opencv":    supports video_id, serial_number, physical_path
   #   - type "uvc":       supports video_id, serial_number, physical_path
 

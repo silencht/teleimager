@@ -12,6 +12,7 @@ import threading
 import signal
 import functools
 import subprocess
+import platform
 import logging_mp
 logging_mp.basic_config(level=logging_mp.INFO)
 logger_mp = logging_mp.get_logger(__name__)
@@ -22,6 +23,17 @@ CONFIG_PATH = os.path.join(
     "..", "..", "cam_config_server.yaml"
 )
 CONFIG_PATH = os.path.normpath(CONFIG_PATH)
+
+
+def reload_uvc_driver():
+    try:
+        subprocess.run("sudo modprobe -r uvcvideo", shell=True, check=True)
+        time.sleep(1)
+        subprocess.run("sudo modprobe uvcvideo debug=0", shell=True, check=True)
+        time.sleep(1)
+        logger_mp.info("UVC driver reloaded successfully.")
+    except subprocess.CalledProcessError as e:
+        logger_mp.error(f"Failed to reload driver: {e}")
 
 # ========================================================
 # camera and camera discovery
@@ -38,7 +50,7 @@ class CameraFinder:
     def __init__(self, realsense_enable=False, verbose=False):
         self.verbose = verbose
         # uvc
-        self._reload_uvc_driver()
+        reload_uvc_driver()
         self.uvc_devices = uvc.device_list()
         self.uid_map = {dev["uid"]: dev for dev in self.uvc_devices}
         # all video devices
@@ -80,15 +92,6 @@ class CameraFinder:
             self.info()
 
     # utils
-    def _reload_uvc_driver(self):
-        try:
-            subprocess.run("sudo modprobe -r uvcvideo", shell=True, check=True)
-            time.sleep(1)
-            subprocess.run("sudo modprobe uvcvideo debug=0", shell=True, check=True)
-            time.sleep(1)
-        except subprocess.CalledProcessError as e:
-            logger_mp.error(f"Failed to reload driver: {e}")
-
     def _list_video_paths(self):
         base = "/sys/class/video4linux/"
         if not os.path.exists(base):
@@ -133,23 +136,39 @@ class CameraFinder:
                 ports.append(devnode)
 
         return ports
-
-    def _list_realsense_serial_numbers(self):
+    
+    def get_realsense_module(self) -> object:
         try:
             import pyrealsense2 as rs
+            return rs
         except ImportError:
-            raise RuntimeError(
-                "[RealSenseCamera] pyrealsense2 is not installed. Please install it to use RealSense cameras.\n"
-                "You can install it manually with:\n"
-                "    cd ~\n"
-                "    git clone https://github.com/IntelRealSense/librealsense.git\n"
-                "    cd librealsense\n"
-                "    git checkout v2.50.0\n"
-                "    mkdir build && cd build\n"
-                "    cmake .. -DBUILD_PYTHON_BINDINGS=ON -DPYTHON_EXECUTABLE=$(which python3)\n"
-                "    make -j$(nproc)\n"
-                "    sudo make install\n"
-            )
+            arch = platform.machine()
+            system = platform.system()
+            print(f"[RealSense] Platform: {system} / {arch}")
+
+            if system == "Linux" and arch.startswith("aarch64"):
+                # Jetson NX / arm64
+                msg = (
+                    "[RealSense] pyrealsense2 not installed. please build from source:\n"
+                    "    cd ~\n"
+                    "    git clone https://github.com/IntelRealSense/librealsense.git\n"
+                    "    cd librealsense\n"
+                    "    git checkout v2.50.0\n"
+                    "    mkdir build && cd build\n"
+                    "    cmake .. -DBUILD_PYTHON_BINDINGS=ON -DPYTHON_EXECUTABLE=$(which python3)\n"
+                    "    make -j$(nproc)\n"
+                    "    sudo make install\n"
+                )
+            else:
+                # x86/x64
+                msg = (
+                    "[RealSense] pyrealsense2 not installed. You can try:\n"
+                    "    pip install pyrealsense2\n"
+                )
+            raise RuntimeError(msg)
+
+    def _list_realsense_serial_numbers(self):
+        rs = self.get_realsense_module()
         ctx = rs.context()
         devices = ctx.query_devices()
         serials = []
@@ -367,26 +386,11 @@ class BaseCamera:
 class RealSenseCamera(BaseCamera):
     def __init__(self, cam_topic, serial_number, img_shape, fps, 
                  enable_zmq=True, zmq_port = 55555, enable_webrtc=False, webrtc_port=66666, enable_depth=False):
+        rs = self.check_pyrealsense2_install()
         super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port)
         self._serial_number = serial_number
         self._enable_depth = enable_depth
         self._latest_depth = None
-
-        try:
-            import pyrealsense2 as rs
-        except ImportError:
-            raise RuntimeError(
-                "[RealSenseCamera] pyrealsense2 is not installed. Please install it to use RealSense cameras.\n"
-                "You can install it manually with:\n"
-                "    cd ~\n"
-                "    git clone https://github.com/IntelRealSense/librealsense.git\n"
-                "    cd librealsense\n"
-                "    git checkout v2.50.0\n"
-                "    mkdir build && cd build\n"
-                "    cmake .. -DBUILD_PYTHON_BINDINGS=ON -DPYTHON_EXECUTABLE=$(which python3)\n"
-                "    make -j$(nproc)\n"
-                "    sudo make install\n"
-            )
         try:
             align_to = rs.stream.color
             self.align = rs.align(align_to)
