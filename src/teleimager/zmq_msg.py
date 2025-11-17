@@ -344,12 +344,13 @@ class SubscriberThread(threading.Thread):
                         img_numpy = self._decode_image(img_bytes)  # decode JPEG bytes to bgr image
                         self._update_fps()                         # update fps
                         self._triple_ring_buffer.write(img_numpy)  # write to 3-ring-buffer
-                    except zmq.Again:
-                        continue
                     except Exception as e:
                         if self._running:
                             logger_mp.error(f"Error in subscriber loop: {e}")
                         break
+                else:
+                    self._triple_ring_buffer.write(None)
+                    logger_mp.debug(f"No message received from {self._host}:{self._port} within timeout.")
         except Exception as e:
             logger_mp.error(f"Failed to initialize subscriber socket: {e}")
         finally:
