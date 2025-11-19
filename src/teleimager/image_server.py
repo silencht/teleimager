@@ -860,7 +860,7 @@ def main():
         "\n"
         "The '--cf' flag means 'camera find'.\n"
         "This will list all detected cameras and their details (video paths, serial numbers and physical path etc.).\n"
-        "Use that information to fill in your 'cam_config.yaml' file.\n"
+        "Use that information to fill in your 'cam_config_server.yaml' file.\n"
         "Once configured, you can start the image server with:\n"
         "\n"
         "    teleimager-server\n"
