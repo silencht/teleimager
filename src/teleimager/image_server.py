@@ -429,6 +429,15 @@ class RealSenseCamera(BaseCamera):
             f"WebRTC: {'enabled, webrtc_port=' + str(self._webrtc_port) if self._enable_webrtc else 'disabled'}"
         )
 
+    def check_pyrealsense2_install(self):
+        try:
+            import pyrealsense2 as rs
+            return rs
+        except Exception as e:
+            raise ImportError(
+                "pyrealsense2 not installed. Install Intel RealSense SDK and pyrealsense2 Python bindings."
+            ) from e
+    
     def _update_frame(self):
         frames = self.pipeline.wait_for_frames()
         aligned_frames = self.align.process(frames)
