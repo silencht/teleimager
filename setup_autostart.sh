@@ -129,6 +129,8 @@ Restart=always
 RestartSec=5
 Environment="PATH=$CONDA_PATH/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
 Environment="PYTHONPATH=$SCRIPT_DIR/src"
+Environment="XR_TELEOP_CERT=/home/unitree/.config/xr_teleoperate/cert.pem"
+Environment="XR_TELEOP_KEY=/home/unitree/.config/xr_teleoperate/key.pem"
 StandardOutput=journal+console
 StandardError=journal+console
 
