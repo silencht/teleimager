@@ -1,4 +1,5 @@
 .vscode/
+build/
 *pycache*
 *.pyc
 *.egg-info

@@ -1,4 +1,5 @@
 import asyncio
+import multiprocessing as mp
 import threading
 import json
 from aiohttp import web
@@ -239,8 +240,8 @@ class BGRArrayVideoStreamTrack(MediaStreamTrack):
         self._closed = True
         await super().stop()
 
-class WebRTC_PublisherThread(threading.Thread):
-    """A thread that runs an aiohttp web server with aiortc to publish video frames via WebRTC."""
+class WebRTC_PublisherProcess(mp.Process):
+    """A process that runs an aiohttp web server with aiortc to publish video frames via WebRTC."""
     def __init__(self, port: int, host: str = "0.0.0.0"):
         super().__init__(daemon=True)
         self._host = host
@@ -249,8 +250,9 @@ class WebRTC_PublisherThread(threading.Thread):
         self._app = web.Application()
         self._runner: Optional[web.AppRunner] = None
         self._pcs = set()  # set of active RTCPeerConnections
-        self._start_event = threading.Event()
-        self._stop_event = threading.Event()
+        self._start_event = mp.Event()
+        self._stop_event = mp.Event()
+        self._frame_queue = mp.Queue()
 
         self._relay: Optional[MediaRelay] = None
         self._bgr_track: Optional[BGRArrayVideoStreamTrack] = None
@@ -352,6 +354,17 @@ class WebRTC_PublisherThread(threading.Thread):
             # mark started for external waiters
             self._start_event.set()
 
+            async def frame_pusher():
+                while not self._stop_event.is_set():
+                    try:
+                        frame = self._frame_queue.get_nowait()
+                        if frame is not None and self._bgr_track:
+                            self._bgr_track.push_frame(frame)
+                    except Exception:
+                        await asyncio.sleep(0.01)
+
+            asyncio.create_task(frame_pusher())
+
             while not self._stop_event.is_set():
                 await asyncio.sleep(0.5)
 
@@ -359,6 +372,10 @@ class WebRTC_PublisherThread(threading.Thread):
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(_http_server())
+        except KeyboardInterrupt:
+            logger_mp.info("WebRTC Publisher process interrupted by user")
+        except Exception as e:
+            logger_mp.error(f"WebRTC Publisher process encountered an error: {e}")
         finally:
             if self._bgr_track:
                 try:
@@ -379,16 +396,10 @@ class WebRTC_PublisherThread(threading.Thread):
             finally:
                 self._loop.close()
 
-    def send(self, data):
-        """Send data to all connected peers' queues."""
-        if self._loop is None or self._bgr_track is None:
-            return
-
-        try:
-            # pass the target loop to the push function so the track can schedule safely
-            self._bgr_track.push_frame(data, loop=self._loop)
-        except Exception as e:
-            logger_mp.debug("Failed to push jpeg: %s", e)
+    def send(self, data: np.ndarray):
+        # """Send data to queue."""
+        if hasattr(self, "_frame_queue"):
+            self._frame_queue.put(data) 
 
     def stop(self):
         """Stop server and all peer connections"""
@@ -406,41 +417,41 @@ class PublisherManager:
     """Centralized management of WebRTC publishers"""
 
     _instance: Optional["PublisherManager"] = None
-    _publisher_threads: Dict[Tuple[str, int], WebRTC_PublisherThread] = {}
+    _publisher_processes: Dict[Tuple[str, int], WebRTC_PublisherProcess] = {}
     _lock = threading.Lock()
     _running = True
 
     def __init__(self):
         pass
 
-    def _create_publisher_thread(self, port: int, host: str = "0.0.0.0") -> WebRTC_PublisherThread:
+    def _create_publisher_process(self, port: int, host: str = "0.0.0.0") -> WebRTC_PublisherProcess:
         try:
-            publisher_thread = WebRTC_PublisherThread(port, host)
-            publisher_thread.start()
-            # Wait for the thread to start and socket to be ready
-            if not publisher_thread.wait_for_start(timeout=1.0):
-                raise ConnectionError(f"Publisher thread failed to start for {host}:{port}")
+            publisher_process = WebRTC_PublisherProcess(port, host)
+            publisher_process.start()
+            # Wait for the process to start and socket to be ready
+            if not publisher_process.wait_for_start(timeout=1.0):
+                raise ConnectionError(f"Publisher process failed to start for {host}:{port}")
 
-            return publisher_thread
+            return publisher_process
         except Exception as e:
-            logger_mp.error(f"Failed to create publisher thread for {host}:{port}: {e}")
+            logger_mp.error(f"Failed to create publisher process for {host}:{port}: {e}")
             raise
 
-    def _get_publisher_thread(self, port: int, host: str = "0.0.0.0") -> WebRTC_PublisherThread:
+    def _get_publisher_process(self, port: int, host: str = "0.0.0.0") -> WebRTC_PublisherProcess:
         key = (host, port)
         with self._lock:
-            if key not in self._publisher_threads:
-                self._publisher_threads[key] = self._create_publisher_thread(port, host)
-            return self._publisher_threads[key]
+            if key not in self._publisher_processes:
+                self._publisher_processes[key] = self._create_publisher_process(port, host)
+            return self._publisher_processes[key]
 
     def _close_publisher(self, key: Tuple[str, int]) -> None:
         with self._lock:
-            if key in self._publisher_threads:
+            if key in self._publisher_processes:
                 try:
-                    self._publisher_threads[key].stop()
+                    self._publisher_processes[key].stop()
                 except Exception as e:
                     logger_mp.error(f"Error stopping publisher at {key[0]}:{key[1]}: {e}")
-                del self._publisher_threads[key]
+                del self._publisher_processes[key]
     
     # --------------------------------------------------------
     # public api
@@ -473,8 +484,8 @@ class PublisherManager:
             raise RuntimeError("WebRTCPublisherManager is closed")
 
         try:
-            publisher_thread = self._get_publisher_thread(port, host)
-            publisher_thread.send(data)
+            publisher_process = self._get_publisher_process(port, host)
+            publisher_process.send(data)
         except Exception as e:
             logger_mp.error(f"Unexpected error in publish: {e}")
             raise
@@ -484,9 +495,9 @@ class PublisherManager:
         self._running = False
         # close all publishers
         with self._lock:
-            for key, publisher_thread in list(self._publisher_threads.items()):
+            for key, publisher_process in list(self._publisher_processes.items()):
                 try:
-                    publisher_thread.stop()
+                    publisher_process.stop()
                 except Exception as e:
                     logger_mp.error(f"Error stopping publisher at {key[0]}:{key[1]}: {e}")
-            self._publisher_threads.clear()
+            self._publisher_processes.clear()
