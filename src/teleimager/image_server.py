@@ -425,7 +425,7 @@ class RealSenseCamera(BaseCamera):
         return (
             f"[RealSenseCamera: {self._cam_topic}] initialized with "
             f"{self._img_shape[0]}x{self._img_shape[1]} @ {self._fps} FPS.\n"
-            f"ZMQ: {'enabled, zmq_port=' + str(self._zmq_port) if self.enable_zmq else 'disabled'}; "
+            f"ZMQ: {'enabled, zmq_port=' + str(self._zmq_port) if self._enable_zmq else 'disabled'}; "
             f"WebRTC: {'enabled, webrtc_port=' + str(self._webrtc_port) if self._enable_webrtc else 'disabled'}"
         )
 
@@ -457,7 +457,7 @@ class RealSenseCamera(BaseCamera):
         if self._enable_webrtc:
             self._webrtc_buffer.write(bgr_numpy)
 
-        if self.enable_zmq:
+        if self._enable_zmq:
             ok, buf = cv2.imencode(".jpg", bgr_numpy)
             if ok:
                 self._zmq_buffer.write(buf.tobytes())
@@ -505,7 +505,7 @@ class UVCCamera(BaseCamera):
         return (
             f"[UVCCamera: {self._cam_topic}] initialized with "
             f"{self._img_shape[0]}x{self._img_shape[1]} @ {self._fps} FPS, MJPG.\n"
-            f"ZMQ: {'enabled, zmq port=' + str(self._zmq_port) if self.enable_zmq else 'disabled'}; "
+            f"ZMQ: {'enabled, zmq port=' + str(self._zmq_port) if self._enable_zmq else 'disabled'}; "
             f"WebRTC: {'enabled, webrtc port=' + str(self._webrtc_port) if self._enable_webrtc else 'disabled'}"
         )
 
@@ -519,7 +519,7 @@ class UVCCamera(BaseCamera):
         if self.cap is not None:
             frame = self.cap.get_frame(timeout=50) # get_frame_robust()
             if frame is not None:
-                if self.enable_zmq:
+                if self._enable_zmq:
                     if frame.jpeg_buffer is not None:
                         self._zmq_buffer.write(bytes(frame.jpeg_buffer))
 
@@ -568,7 +568,7 @@ class OpenCVCamera(BaseCamera):
         return (
             f"[OpenCVCamera: {self._cam_topic}] initialized with "
             f"{self._img_shape[0]}x{self._img_shape[1]} @ {self._fps} FPS.\n"
-            f"ZMQ: {'enabled, zmq port=' + str(self._zmq_port) if self.enable_zmq else 'disabled'}; "
+            f"ZMQ: {'enabled, zmq port=' + str(self._zmq_port) if self._enable_zmq else 'disabled'}; "
             f"WebRTC: {'enabled, webrtc port=' + str(self._webrtc_port) if self._enable_webrtc else 'disabled'}"
         )
         
@@ -583,7 +583,7 @@ class OpenCVCamera(BaseCamera):
                 if self._enable_webrtc:
                     self._webrtc_buffer.write(bgr_numpy)
 
-                if self.enable_zmq:
+                if self._enable_zmq:
                     ok, buf = cv2.imencode(".jpg", bgr_numpy)
                     if ok:
                         self._zmq_buffer.write(buf.tobytes())

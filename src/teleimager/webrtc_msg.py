@@ -192,13 +192,23 @@ class BGRArrayVideoStreamTrack(MediaStreamTrack):
     def __init__(self):
         super().__init__()
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        self._last_frame: Optional[av.VideoFrame] = None
         self._closed = False
 
     async def recv(self) -> av.VideoFrame:
         if self._closed:
             raise asyncio.CancelledError("Track has been closed")
         
-        frame = await self._queue.get()
+        try:
+            frame = self._queue.get_nowait()
+            self._last_frame = frame
+        except asyncio.QueueEmpty:
+            frame = self._last_frame
+
+        if frame is None:
+            await asyncio.sleep(0.005)
+            return await self.recv()
+
         if getattr(frame, "pts", None) is None:
             frame.pts = int(time.time() * 1000)
             frame.time_base = Fraction(1, 1000)
@@ -254,7 +264,6 @@ class WebRTC_PublisherProcess(mp.Process):
         self._stop_event = mp.Event()
         self._frame_queue = mp.Queue()
 
-        self._relay: Optional[MediaRelay] = None
         self._bgr_track: Optional[BGRArrayVideoStreamTrack] = None
 
         # register routes
@@ -289,10 +298,9 @@ class WebRTC_PublisherProcess(mp.Process):
         self._pcs.add(pc)
 
         # subscribe to relay-wrapped source track if available
-        if self._relay and self._bgr_track:
+        if self._bgr_track:
             try:
-                subscribed = self._relay.subscribe(self._bgr_track)
-                pc.addTrack(subscribed)
+                pc.addTrack(self._bgr_track)
             except Exception as e:
                 logger_mp.warning("Failed to subscribe relay track: %s", e)
         else:
@@ -344,13 +352,14 @@ class WebRTC_PublisherProcess(mp.Process):
         async def _http_server():
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
+
+            self._bgr_track = BGRArrayVideoStreamTrack()
+
             ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ssl_context.load_cert_chain(CERT_PEM_PATH, KEY_PEM_PATH)
             site = web.TCPSite(self._runner, self._host, self._port, ssl_context=ssl_context)
             await site.start()
 
-            self._relay = MediaRelay()
-            self._bgr_track = BGRArrayVideoStreamTrack()
             # mark started for external waiters
             self._start_event.set()
 
