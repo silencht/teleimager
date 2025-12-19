@@ -4,7 +4,7 @@ import threading
 import json
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
-from aiortc.contrib.media import MediaRelay
+from aiortc.rtcrtpsender import RTCRtpSender
 import av
 import time
 from fractions import Fraction
@@ -33,6 +33,63 @@ KEY_PEM_PATH = KEY_PEM_PATH.resolve()
 import logging_mp
 logger_mp = logging_mp.get_logger(__name__)
 
+# ========================================================
+#  H264 NVENC Monkey Patch
+# ========================================================
+import av
+import fractions
+from aiortc.codecs import h264
+
+def nvenc_encode_frame(self, frame: av.VideoFrame, force_keyframe: bool):
+    if self.codec and (frame.width != self.codec.width or frame.height != self.codec.height):
+        self.codec = None
+
+    if self.codec is None:
+        self.codec = av.CodecContext.create("h264_nvenc", "w")
+        self.codec.width = frame.width
+        self.codec.height = frame.height
+        self.codec.bit_rate = self.target_bitrate
+        self.codec.pix_fmt = "yuv420p"
+        self.codec.framerate = fractions.Fraction(30, 1)
+        self.codec.time_base = fractions.Fraction(1, 30)
+        
+        self.codec.options = {
+            "preset": "fast",
+            "rc": "vbr",
+            "zerolatency": "1",
+            "forced-idr": "1",
+            "g": "60",
+        }
+        self.codec.profile = "baseline"
+        self.frame_count = 0
+        force_keyframe = True
+        logger_mp.info(f"[H264 Patch] Init NVENC {frame.width}x{frame.height} with GOP=60")
+
+    if not force_keyframe:
+        if hasattr(self, "frame_count") and self.frame_count % 60 == 0:
+            force_keyframe = True
+            # logger_mp.debug(f"[H264 Patch] Sending periodic IDR frame at {self.frame_count}")
+    
+    if hasattr(self, "frame_count"):
+        self.frame_count += 1
+    else:
+        self.frame_count = 1
+
+    if force_keyframe:
+        frame.pict_type = av.video.frame.PictureType.I
+    else:
+        frame.pict_type = av.video.frame.PictureType.NONE
+
+    try:
+        for packet in self.codec.encode(frame):
+            data = bytes(packet)
+            if data:
+                yield from self._split_bitstream(data)
+    except Exception as e:
+        logger_mp.warning(f"[H264 Patch] Encode error: {e}")
+
+logger_mp.info("[System] Applying H264 NVENC Monkey Patch to aiortc...")
+h264.H264Encoder._encode_frame = nvenc_encode_frame
 
 # ========================================================
 # Embed HTML and JS directly
@@ -246,16 +303,14 @@ class BGRArrayVideoStreamTrack(MediaStreamTrack):
         except Exception as e:
             logger_mp.debug("BGRArrayVideoStreamTrack.push_frame: scheduling error %s", e)
 
-    async def stop(self):
-        self._closed = True
-        await super().stop()
 
 class WebRTC_PublisherProcess(mp.Process):
     """A process that runs an aiohttp web server with aiortc to publish video frames via WebRTC."""
-    def __init__(self, port: int, host: str = "0.0.0.0"):
+    def __init__(self, port: int, host: str = "0.0.0.0", codec_pref: str = None):
         super().__init__(daemon=True)
         self._host = host
         self._port = port
+        self._codec_pref = codec_pref
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._app = web.Application()
         self._runner: Optional[web.AppRunner] = None
@@ -300,7 +355,21 @@ class WebRTC_PublisherProcess(mp.Process):
         # subscribe to relay-wrapped source track if available
         if self._bgr_track:
             try:
-                pc.addTrack(self._bgr_track)
+                transceiver = pc.addTransceiver(self._bgr_track)
+                capabilities = RTCRtpSender.getCapabilities("video")
+                
+                if self._codec_pref and self._codec_pref.lower() == "h264":
+                    codecs = [c for c in capabilities.codecs if c.mimeType == "video/H264"]
+                    if codecs:
+                        transceiver.setCodecPreferences(codecs)
+                        logger_mp.info(f"[WebRTC] Preference set to H264 (NVENC Patched)")
+                        
+                elif self._codec_pref and self._codec_pref.lower() == "vp8":
+                    codecs = [c for c in capabilities.codecs if c.mimeType == "video/VP8"]
+                    if codecs:
+                        transceiver.setCodecPreferences(codecs)
+                        logger_mp.info(f"[WebRTC] Preference set to VP8")
+                    
             except Exception as e:
                 logger_mp.warning("Failed to subscribe relay track: %s", e)
         else:
@@ -433,9 +502,9 @@ class PublisherManager:
     def __init__(self):
         pass
 
-    def _create_publisher_process(self, port: int, host: str = "0.0.0.0") -> WebRTC_PublisherProcess:
+    def _create_publisher_process(self, port: int, host: str = "0.0.0.0", codec_pref: str = None) -> WebRTC_PublisherProcess:
         try:
-            publisher_process = WebRTC_PublisherProcess(port, host)
+            publisher_process = WebRTC_PublisherProcess(port, host, codec_pref)
             publisher_process.start()
             # Wait for the process to start and socket to be ready
             if not publisher_process.wait_for_start(timeout=1.0):
@@ -446,11 +515,11 @@ class PublisherManager:
             logger_mp.error(f"Failed to create publisher process for {host}:{port}: {e}")
             raise
 
-    def _get_publisher_process(self, port: int, host: str = "0.0.0.0") -> WebRTC_PublisherProcess:
+    def _get_publisher_process(self, port: int, host: str = "0.0.0.0", codec_pref: str = None) -> WebRTC_PublisherProcess:
         key = (host, port)
         with self._lock:
             if key not in self._publisher_processes:
-                self._publisher_processes[key] = self._create_publisher_process(port, host)
+                self._publisher_processes[key] = self._create_publisher_process(port, host, codec_pref)
             return self._publisher_processes[key]
 
     def _close_publisher(self, key: Tuple[str, int]) -> None:
@@ -477,7 +546,7 @@ class PublisherManager:
                     cls._instance = cls()
         return cls._instance
 
-    def publish(self, data: Any, port: int, host: str = "0.0.0.0") -> None:
+    def publish(self, data: Any, port: int, host: str = "0.0.0.0", codec_pref: str = None) -> None:
         """Publish data to queue-based communication.
 
         Args:
@@ -493,7 +562,7 @@ class PublisherManager:
             raise RuntimeError("WebRTCPublisherManager is closed")
 
         try:
-            publisher_process = self._get_publisher_process(port, host)
+            publisher_process = self._get_publisher_process(port, host, codec_pref)
             publisher_process.send(data)
         except Exception as e:
             logger_mp.error(f"Unexpected error in publish: {e}")
