@@ -1,27 +1,32 @@
 import asyncio
-import multiprocessing as mp
 import threading
 import json
 from aiohttp import web
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from aiortc.rtcrtpsender import RTCRtpSender
+from aiortc.contrib.media import MediaRelay
+from aiortc.codecs import h264
 import av
 import time
-from fractions import Fraction
-import numpy as np
-from typing import Dict, Optional, Tuple, Any
 import ssl
 import os
 from pathlib import Path
+import queue
+import fractions
+import numpy as np
+from typing import Dict, Optional, Tuple, Any
 
-# current module directory
+import logging_mp
+logger_mp = logging_mp.get_logger(__name__)
+
+# ========================================================
+# Path Configuration
+# ========================================================
 module_dir = Path(__file__).resolve().parent.parent.parent
 default_cert = module_dir / "cert.pem"
 default_key = module_dir / "key.pem"
-# environment variable overrides
 env_cert = os.getenv("XR_TELEOP_CERT")
 env_key = os.getenv("XR_TELEOP_KEY")
-# user configured paths take precedence
 user_config_dir = Path.home() / ".config" / "xr_teleoperate"
 user_cert = user_config_dir / "cert.pem"
 user_key = user_config_dir / "key.pem"
@@ -30,22 +35,27 @@ KEY_PEM_PATH = Path(env_key or (user_key if user_key.exists() else default_key))
 CERT_PEM_PATH = CERT_PEM_PATH.resolve()
 KEY_PEM_PATH = KEY_PEM_PATH.resolve()
 
-import logging_mp
-logger_mp = logging_mp.get_logger(__name__)
-
 # ========================================================
 #  H264 NVENC Monkey Patch
 # ========================================================
-import av
-import fractions
-from aiortc.codecs import h264
-
 def nvenc_encode_frame(self, frame: av.VideoFrame, force_keyframe: bool):
     if self.codec and (frame.width != self.codec.width or frame.height != self.codec.height):
         self.codec = None
 
+    if force_keyframe:
+        frame.pict_type = av.video.frame.PictureType.I
+    else:
+        frame.pict_type = av.video.frame.PictureType.NONE
+
     if self.codec is None:
-        self.codec = av.CodecContext.create("h264_nvenc", "w")
+        # Try NVENC first, fallback to libx264 if needed (logic simplified here)
+        try:
+            self.codec = av.CodecContext.create("h264_nvenc", "w")
+            logger_mp.debug(f"[H264 Patch] Initialized h264_nvenc encoder")
+        except Exception:
+            self.codec = av.CodecContext.create("libx264", "w")
+            logger_mp.warning(f"[H264 Patch] NVENC failed, falling back to libx264")
+
         self.codec.width = frame.width
         self.codec.height = frame.height
         self.codec.bit_rate = self.target_bitrate
@@ -55,20 +65,24 @@ def nvenc_encode_frame(self, frame: av.VideoFrame, force_keyframe: bool):
         
         self.codec.options = {
             "preset": "fast",
-            "rc": "vbr",
             "zerolatency": "1",
-            "forced-idr": "1",
             "g": "60",
+            "delay": "0",
+            "forced-idr": "1",
         }
-        self.codec.profile = "baseline"
+        # If fallback to libx264, ensure threads=1 to save CPU
+        if self.codec.name == "libx264":
+            self.codec.options["level"] = "31"
+            self.codec.options["preset"] = "ultrafast"
+            self.codec.options["tune"] = "zerolatency"
+            self.codec.options["threads"] = "1"
+
         self.frame_count = 0
         force_keyframe = True
-        logger_mp.info(f"[H264 Patch] Init NVENC {frame.width}x{frame.height} with GOP=60")
 
     if not force_keyframe:
         if hasattr(self, "frame_count") and self.frame_count % 60 == 0:
             force_keyframe = True
-            # logger_mp.debug(f"[H264 Patch] Sending periodic IDR frame at {self.frame_count}")
     
     if hasattr(self, "frame_count"):
         self.frame_count += 1
@@ -94,48 +108,58 @@ h264.H264Encoder._encode_frame = nvenc_encode_frame
 # ========================================================
 # Embed HTML and JS directly
 # ========================================================
+# ========================================================
+# Embed HTML and JS directly
+# ========================================================
 INDEX_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WebRTC webcam</title>
+    <title>WebRTC Stream</title>
     <style>
-    button {
-        padding: 8px 16px;
+    body { 
+        font-family: sans-serif; 
+        background: #fff; 
+        color: #000; 
+        text-align: center; 
     }
-
-    video {
-        width: 100%;
+    button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+    video { width: 100%; max-width: 1280px; background: #000; margin-top: 10px; }
+    
+    /* Title link style */
+    h1 a {
+        text-decoration: none;
+        color: #000;
     }
-
-    .option {
-        margin-bottom: 8px;
-    }
-
-    #media {
-        max-width: 1280px;
+    h1 a:hover {
+        color: #555;
     }
     </style>
 </head>
 <body>
+    <h1>
+        <a href="https://github.com/unitreerobotics/teleimager" target="_blank">
+            XR Teleoperation WebRTC Camera Stream
+        </a>
+    </h1>
 
-<div class="option">
-    <input id="use-stun" type="checkbox"/>
-    <label for="use-stun">Use STUN server</label>
-</div>
-<button id="start" onclick="start()">Start</button>
-<button id="stop" style="display: none" onclick="stop()">Stop</button>
+    <div style="margin-bottom: 20px;">
+        <a href="https://www.unitree.com/" target="_blank">
+            <img src="https://www.unitree.com/images/0079f8938336436e955ea3a98c4e1e59.svg" alt="Unitree LOGO" width="10%">
+        </a>
+    </div>
 
-<div id="media">
-    <h2>Media</h2>
-
-    <audio id="audio" autoplay="true"></audio>
-    <video id="video" autoplay="true" playsinline="true"></video>
-</div>
-
-<script src="client.js"></script>
+    <button id="start" onclick="start()">Start</button>
+    <button id="stop" style="display: none" onclick="stop()">Stop</button>
+    
+    <div id="media">
+        <video id="video" autoplay playsinline muted></video>
+        <audio id="audio" autoplay></audio>
+    </div>
+    
+    <script src="client.js"></script>
 </body>
 </html>
 """
@@ -145,7 +169,6 @@ var pc = null;
 
 function negotiate() {
     pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
     return pc.createOffer().then((offer) => {
         return pc.setLocalDescription(offer);
     }).then(() => {
@@ -188,9 +211,7 @@ function start() {
         sdpSemantics: 'unified-plan'
     };
 
-    if (document.getElementById('use-stun').checked) {
-        config.iceServers = [{ urls: ['stun:stun.l.google.com:19302'] }];
-    }
+    // Removed STUN server check logic completely
 
     pc = new RTCPeerConnection(config);
 
@@ -209,7 +230,11 @@ function start() {
 
 function stop() {
     document.getElementById('stop').style.display = 'none';
-    setTimeout(() => { pc.close(); }, 500);
+    document.getElementById('start').style.display = 'inline-block';
+    if (pc) {
+        pc.close();
+        pc = null;
+    }
 }
 """
 
@@ -249,77 +274,76 @@ class BGRArrayVideoStreamTrack(MediaStreamTrack):
     def __init__(self):
         super().__init__()
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=1)
-        self._last_frame: Optional[av.VideoFrame] = None
-        self._closed = False
+        self._start_time = None
+        self._pts = 0
 
     async def recv(self) -> av.VideoFrame:
-        if self._closed:
-            raise asyncio.CancelledError("Track has been closed")
-        
-        try:
-            frame = self._queue.get_nowait()
-            self._last_frame = frame
-        except asyncio.QueueEmpty:
-            frame = self._last_frame
-
-        if frame is None:
-            await asyncio.sleep(0.005)
-            return await self.recv()
-
-        if getattr(frame, "pts", None) is None:
-            frame.pts = int(time.time() * 1000)
-            frame.time_base = Fraction(1, 1000)
+        # This will suspend execution until a frame is available
+        # preventing CPU busy-waiting
+        frame = await self._queue.get()
         return frame
 
-    def _queue_put_nowait(self, frame: av.VideoFrame):
-        try:
-            self._queue.put_nowait(frame)
-        except asyncio.QueueFull:
-            # queue is full -> remove oldest and put newest
-            try:
-                _ = self._queue.get_nowait()
-            except Exception:
-                pass
-            try:
-                self._queue.put_nowait(frame)
-            except Exception:
-                # if still fails, silently drop
-                pass
-
     def push_frame(self, bgr_numpy: np.ndarray, loop: Optional[asyncio.AbstractEventLoop] = None):
-        """Push a BGR numpy array directly into the videotrack."""
         if bgr_numpy is None:
             return
 
+        # 1. Convert and calculate PTS immediately
+        # MediaRelay requires consistent PTS to function correctly
         try:
             video_frame = av.VideoFrame.from_ndarray(bgr_numpy, format="bgr24")
+            
+            if self._start_time is None:
+                self._start_time = time.time()
+                self._pts = 0
+            else:
+                # 90000 is the standard RTP clock rate for video
+                # This ensures smooth playback
+                self._pts = int((time.time() - self._start_time) * 90000)
+            
+            video_frame.pts = self._pts
+            video_frame.time_base = fractions.Fraction(1, 90000)
+            
         except Exception as e:
-            logger_mp.debug("NDArrayVideoStreamTrack.push_frame: failed to convert ndarray to VideoFrame %s", e)
+            logger_mp.debug(f"Conversion failed: {e}")
             return
 
+        # 2. Push to queue thread-safely
         target_loop = loop or asyncio.get_event_loop()
-        try:
-            target_loop.call_soon_threadsafe(self._queue_put_nowait, video_frame)
-        except Exception as e:
-            logger_mp.debug("BGRArrayVideoStreamTrack.push_frame: scheduling error %s", e)
+        if target_loop.is_closed():
+            return
+            
+        def _put():
+            try:
+                # Drop old frame if queue is full (Low Latency strategy)
+                if self._queue.full():
+                    self._queue.get_nowait()
+                self._queue.put_nowait(video_frame)
+            except Exception:
+                pass
+
+        target_loop.call_soon_threadsafe(_put)
 
 
-class WebRTC_PublisherProcess(mp.Process):
-    """A process that runs an aiohttp web server with aiortc to publish video frames via WebRTC."""
+class WebRTC_PublisherThread(threading.Thread):
+    """
+    Runs aiohttp + aiortc in a separate THREAD (not Process).
+    This enables shared memory and removes Pickling overhead.
+    """
     def __init__(self, port: int, host: str = "0.0.0.0", codec_pref: str = None):
         super().__init__(daemon=True)
         self._host = host
         self._port = port
         self._codec_pref = codec_pref
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._app = web.Application()
         self._runner: Optional[web.AppRunner] = None
-        self._pcs = set()  # set of active RTCPeerConnections
-        self._start_event = mp.Event()
-        self._stop_event = mp.Event()
-        self._frame_queue = mp.Queue()
+        self._pcs = set()
+        self._start_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._frame_queue = queue.Queue(maxsize=1)
 
         self._bgr_track: Optional[BGRArrayVideoStreamTrack] = None
+        self._relay: Optional[MediaRelay] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
         # register routes
         self._app.router.add_get("/", self._index)
@@ -329,7 +353,6 @@ class WebRTC_PublisherProcess(mp.Process):
         self._app.router.add_options("/", self._options)
         self._app.router.add_options("/client.js", self._options)
         self._app.router.add_options("/offer", self._options)
-        self._app.on_shutdown.append(self._on_shutdown)
 
     async def _index(self, request: web.Request) -> web.Response:
         return web.Response(content_type="text/html", text=INDEX_HTML)
@@ -345,40 +368,46 @@ class WebRTC_PublisherProcess(mp.Process):
         })
 
     async def _offer(self, request: web.Request) -> web.Response:
-        """Handle incoming WebRTC offer, create RTCPeerConnection, attach a _QueuedVideoTrack, and return an answer."""
         params = await request.json()
         offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
         pc = RTCPeerConnection()
         self._pcs.add(pc)
 
-        # subscribe to relay-wrapped source track if available
-        if self._bgr_track:
+        # CORE LOGIC: Use MediaRelay to subscribe
+        # This ensures encoding happens only once globally
+        if self._bgr_track and self._relay:
             try:
-                transceiver = pc.addTransceiver(self._bgr_track)
-                capabilities = RTCRtpSender.getCapabilities("video")
+                relayed_track = self._relay.subscribe(self._bgr_track)
+                transceiver = pc.addTransceiver(relayed_track, direction="sendonly")
                 
-                if self._codec_pref and self._codec_pref.lower() == "h264":
-                    codecs = [c for c in capabilities.codecs if c.mimeType == "video/H264"]
-                    if codecs:
-                        transceiver.setCodecPreferences(codecs)
-                        logger_mp.info(f"[WebRTC] Preference set to H264 (NVENC Patched)")
-                        
-                elif self._codec_pref and self._codec_pref.lower() == "vp8":
-                    codecs = [c for c in capabilities.codecs if c.mimeType == "video/VP8"]
-                    if codecs:
-                        transceiver.setCodecPreferences(codecs)
-                        logger_mp.info(f"[WebRTC] Preference set to VP8")
+                if self._codec_pref:
+                    capabilities = RTCRtpSender.getCapabilities("video")
+                    pref = self._codec_pref.lower()
+                    
+                    if pref == "h264":
+                        codecs = [c for c in capabilities.codecs if c.mimeType == "video/H264"]
+                        if codecs: 
+                            transceiver.setCodecPreferences(codecs)
+                            logger_mp.info(f"Applied H264 codec preference for WebRTC Publisher on:{self._port}")
+                            
+                    elif pref == "vp8":
+                        codecs = [c for c in capabilities.codecs if c.mimeType == "video/VP8"]
+                        if codecs: 
+                            transceiver.setCodecPreferences(codecs)
+                            logger_mp.info(f"Applied VP8 codec preference for WebRTC Publisher on:{self._port}")
+                            
+                    else:
+                        logger_mp.warning(f"Unknown codec preference: {pref}. Using auto-negotiation on:{self._port}")
+                else:
+                    logger_mp.info(f"No codec preference set. Using auto-negotiation on:{self._port}")
                     
             except Exception as e:
-                logger_mp.warning("Failed to subscribe relay track: %s", e)
-        else:
-            logger_mp.warning("Relay or JPEG track not ready; peer will have no video")
+                logger_mp.error(f"Relay subscription failed: {e}")
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
-            logger_mp.info(f"Connection state is {pc.connectionState}")
-            if pc.connectionState == "failed" or pc.connectionState == "closed":
+            if pc.connectionState in ["failed", "closed"]:
                 await self._cleanup_pc(pc)
 
         await pc.setRemoteDescription(offer)
@@ -391,191 +420,120 @@ class WebRTC_PublisherProcess(mp.Process):
             headers={"Access-Control-Allow-Origin": "*"}
         )
 
-    async def _cleanup_pc(self, pc: RTCPeerConnection):
-        """Cleanup a peer connection and its queue."""
-        if pc in self._pcs:
-            try:
-                await pc.close()
-            except Exception:
-                pass
-            self._pcs.discard(pc)
+    async def _cleanup_pc(self, pc):
+        self._pcs.discard(pc)
+        try:
+            await pc.close()
+        except: pass
 
-    async def _on_shutdown(self, app: web.Application):
-        """Shutdown all pcs and its queues."""
-        coros = [pc.close() for pc in list(self._pcs)]
-        if coros:
-            await asyncio.gather(*coros, return_exceptions=True)
-        self._pcs.clear()
-        if self._bgr_track:
-            try:
-                await self._bgr_track.stop()
-            except Exception:
-                pass
-            self._bgr_track = None
-
-    def wait_for_start(self, timeout: float = 1.0) -> bool:
-        """Wait until http server is ready"""
+    def wait_for_start(self, timeout=1.0):
         return self._start_event.wait(timeout=timeout)
 
     def run(self):
-        async def _http_server():
+        # Create a new Event Loop for this thread
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        
+        async def _main():
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()
-
+            
+            # Init Track and Relay inside the loop
             self._bgr_track = BGRArrayVideoStreamTrack()
+            self._relay = MediaRelay()
 
             ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ssl_context.load_cert_chain(CERT_PEM_PATH, KEY_PEM_PATH)
             site = web.TCPSite(self._runner, self._host, self._port, ssl_context=ssl_context)
             await site.start()
-
-            # mark started for external waiters
             self._start_event.set()
-
-            async def frame_pusher():
-                while not self._stop_event.is_set():
-                    try:
-                        frame = self._frame_queue.get_nowait()
-                        if frame is not None and self._bgr_track:
-                            self._bgr_track.push_frame(frame)
-                    except Exception:
-                        await asyncio.sleep(0.01)
-
-            asyncio.create_task(frame_pusher())
-
+            
+            # Frame Pushing Loop
             while not self._stop_event.is_set():
-                await asyncio.sleep(0.5)
+                try:
+                    # Non-blocking check for new frames
+                    if not self._frame_queue.empty():
+                        # Get frame (no pickling overhead in Threads!)
+                        frame = self._frame_queue.get_nowait()
+                        self._bgr_track.push_frame(frame, loop=self._loop)
+                    
+                    # CRITICAL: Yield control to asyncio loop to handle WebRTC packets
+                    await asyncio.sleep(0.005)
+                except Exception:
+                    await asyncio.sleep(0.005)
 
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
         try:
-            self._loop.run_until_complete(_http_server())
-        except KeyboardInterrupt:
-            logger_mp.info("WebRTC Publisher process interrupted by user")
+            self._loop.run_until_complete(_main())
         except Exception as e:
-            logger_mp.error(f"WebRTC Publisher process encountered an error: {e}")
+            logger_mp.error(f"WebRTC Thread Error: {e}")
         finally:
-            if self._bgr_track:
-                try:
-                    self._loop.run_until_complete(self._bgr_track.stop())
-                except Exception:
-                    pass
-            if self._runner:
-                try:
-                    self._loop.run_until_complete(self._runner.cleanup())
-                except Exception:
-                    pass
-
-            pending = asyncio.all_tasks(loop=self._loop)
-            for t in pending:
-                t.cancel()
-            try:
-                self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            finally:
-                self._loop.close()
+            if self._loop: self._loop.close()
 
     def send(self, data: np.ndarray):
-        # """Send data to queue."""
-        if hasattr(self, "_frame_queue"):
-            self._frame_queue.put(data) 
+        """Send data to the processing thread."""
+        # Simple drop-frame logic if queue is full
+        if not self._frame_queue.full():
+            self._frame_queue.put(data)
+        else:
+            try:
+                self._frame_queue.get_nowait()
+                self._frame_queue.put(data)
+            except: pass
 
     def stop(self):
-        """Stop server and all peer connections"""
         self._stop_event.set()
-        if self._loop:
-            # trigger a dummy call to unblock loop sleep
-            fut = asyncio.run_coroutine_threadsafe(asyncio.sleep(0), self._loop)
-            try:
-                fut.result(timeout=1)
-            except Exception:
-                pass
-        self.join()
+        self.join(timeout=1.0)
 
+
+# ========================================================
+# Manager (Singleton)
+# ========================================================
 class PublisherManager:
-    """Centralized management of WebRTC publishers"""
-
+    """Manages WebRTC_PublisherThreads."""
     _instance: Optional["PublisherManager"] = None
-    _publisher_processes: Dict[Tuple[str, int], WebRTC_PublisherProcess] = {}
+    _publisher_threads: Dict[Tuple[str, int], WebRTC_PublisherThread] = {}
     _lock = threading.Lock()
     _running = True
 
     def __init__(self):
         pass
 
-    def _create_publisher_process(self, port: int, host: str = "0.0.0.0", codec_pref: str = None) -> WebRTC_PublisherProcess:
-        try:
-            publisher_process = WebRTC_PublisherProcess(port, host, codec_pref)
-            publisher_process.start()
-            # Wait for the process to start and socket to be ready
-            if not publisher_process.wait_for_start(timeout=1.0):
-                raise ConnectionError(f"Publisher process failed to start for {host}:{port}")
-
-            return publisher_process
-        except Exception as e:
-            logger_mp.error(f"Failed to create publisher process for {host}:{port}: {e}")
-            raise
-
-    def _get_publisher_process(self, port: int, host: str = "0.0.0.0", codec_pref: str = None) -> WebRTC_PublisherProcess:
-        key = (host, port)
-        with self._lock:
-            if key not in self._publisher_processes:
-                self._publisher_processes[key] = self._create_publisher_process(port, host, codec_pref)
-            return self._publisher_processes[key]
-
-    def _close_publisher(self, key: Tuple[str, int]) -> None:
-        with self._lock:
-            if key in self._publisher_processes:
-                try:
-                    self._publisher_processes[key].stop()
-                except Exception as e:
-                    logger_mp.error(f"Error stopping publisher at {key[0]}:{key[1]}: {e}")
-                del self._publisher_processes[key]
-    
-    # --------------------------------------------------------
-    # public api
-    # --------------------------------------------------------
     @classmethod
     def get_instance(cls) -> "PublisherManager":
-        """Get or create the singleton instance with thread safety.
-        Returns:
-            The singleton WebRTCPublisherManager instance
-        """
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
 
+    def _create_publisher(self, port: int, host: str, codec_pref: str):
+        t = WebRTC_PublisherThread(port, host, codec_pref)
+        t.start()
+        if not t.wait_for_start(timeout=5.0):
+             raise ConnectionError("Publisher failed to start (Timeout)")
+        return t
+
+    def _get_publisher(self, port, host, codec_pref):
+        key = (host, port)
+        with self._lock:
+            if key not in self._publisher_threads:
+                self._publisher_threads[key] = self._create_publisher(port, host, codec_pref)
+            return self._publisher_threads[key]
+
     def publish(self, data: Any, port: int, host: str = "0.0.0.0", codec_pref: str = None) -> None:
-        """Publish data to queue-based communication.
-
-        Args:
-            data: The data to publish
-            port: The port number
-            host: The host address
-
-        Raises:
-            ConnectionError: If publishing fails
-            SerializationError: If data serialization fails
-        """
-        if not self._running:
-            raise RuntimeError("WebRTCPublisherManager is closed")
-
+        if not self._running: return
         try:
-            publisher_process = self._get_publisher_process(port, host, codec_pref)
-            publisher_process.send(data)
+            pub = self._get_publisher(port, host, codec_pref)
+            pub.send(data)
         except Exception as e:
             logger_mp.error(f"Unexpected error in publish: {e}")
-            raise
+            pass
 
     def close(self) -> None:
-        """Close all publishers."""
         self._running = False
-        # close all publishers
         with self._lock:
-            for key, publisher_process in list(self._publisher_processes.items()):
+            for key, pub in list(self._publisher_threads.items()):
                 try:
-                    publisher_process.stop()
-                except Exception as e:
-                    logger_mp.error(f"Error stopping publisher at {key[0]}:{key[1]}: {e}")
-            self._publisher_processes.clear()
+                    pub.stop()
+                except Exception: pass
+            self._publisher_threads.clear()

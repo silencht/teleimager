@@ -522,7 +522,7 @@ class UVCCamera(BaseCamera):
 
     def _update_frame(self):
         if self.cap is not None:
-            frame = self.cap.get_frame(timeout=500) # get_frame_robust()
+            frame = self.cap.get_frame_robust() # get_frame(timeout=500)
             if frame is not None:
                 if self._enable_zmq:
                     if frame.jpeg_buffer is not None:

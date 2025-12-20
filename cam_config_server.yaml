@@ -14,7 +14,7 @@ head_camera:
   enable_webrtc: true
   # Port for WebRTC signaling server
   webrtc_port : 60001
-  # webrtc codec preference, options: "vp8", "h264"
+  # webrtc codec preference, options: "vp8", "h264", null (auto-negotiation)
   webrtc_codec: h264
 
   # Type of camera:
