@@ -124,6 +124,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=$SCRIPT_DIR
+CPUAffinity=0 1 2
 ExecStart=/bin/bash -lc "source $CONDA_PATH/etc/profile.d/conda.sh && conda activate $CONDA_ENV && $CMD_WITH_ARGS"
 Restart=always
 RestartSec=5
