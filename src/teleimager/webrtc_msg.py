@@ -36,63 +36,39 @@ CERT_PEM_PATH = CERT_PEM_PATH.resolve()
 KEY_PEM_PATH = KEY_PEM_PATH.resolve()
 
 # ========================================================
-#  H264 NVENC Monkey Patch
+# libx264 for Jetson (Patch h264 Encoder)
 # ========================================================
-def nvenc_encode_frame(self, frame: av.VideoFrame, force_keyframe: bool):
+def jetson_software_encode_frame(self, frame: av.VideoFrame, force_keyframe: bool):
     if self.codec and (frame.width != self.codec.width or frame.height != self.codec.height):
         self.codec = None
 
-    if force_keyframe:
-        frame.pict_type = av.video.frame.PictureType.I
-    else:
-        frame.pict_type = av.video.frame.PictureType.NONE
-
     if self.codec is None:
-        # Try NVENC first, fallback to libx264 if needed (logic simplified here)
         try:
-            self.codec = av.CodecContext.create("h264_nvenc", "w")
-            logger_mp.debug(f"[H264 Patch] Initialized h264_nvenc encoder")
-        except Exception:
             self.codec = av.CodecContext.create("libx264", "w")
-            logger_mp.warning(f"[H264 Patch] NVENC failed, falling back to libx264")
-
-        self.codec.width = frame.width
-        self.codec.height = frame.height
-        self.codec.bit_rate = self.target_bitrate
-        self.codec.pix_fmt = "yuv420p"
-        self.codec.framerate = fractions.Fraction(30, 1)
-        self.codec.time_base = fractions.Fraction(1, 30)
+            self.codec.width = frame.width
+            self.codec.height = frame.height
+            self.codec.bit_rate = self.target_bitrate
+            self.codec.pix_fmt = "yuv420p"
+            self.codec.framerate = fractions.Fraction(30, 1)
+            self.codec.time_base = fractions.Fraction(1, 30)
         
-        self.codec.options = {
-            "preset": "fast",
-            "zerolatency": "1",
-            "g": "60",
-            "delay": "0",
-            "forced-idr": "1",
-        }
-        # If fallback to libx264, ensure threads=1 to save CPU
-        if self.codec.name == "libx264":
-            self.codec.options["level"] = "31"
-            self.codec.options["preset"] = "ultrafast"
-            self.codec.options["tune"] = "zerolatency"
-            self.codec.options["threads"] = "1"
-
-        self.frame_count = 0
-        force_keyframe = True
-
-    if not force_keyframe:
-        if hasattr(self, "frame_count") and self.frame_count % 60 == 0:
+            self.codec.options = {
+                "preset": "ultrafast",
+                "tune": "zerolatency",
+                "threads": "1",
+                "g": "60",
+            }
+            self.frame_count = 0
             force_keyframe = True
-    
-    if hasattr(self, "frame_count"):
-        self.frame_count += 1
-    else:
-        self.frame_count = 1
+        except Exception as e:
+            logger_mp.error(f"[H264 Patch] Initialization failed: {e}")
+            return
 
-    if force_keyframe:
-        frame.pict_type = av.video.frame.PictureType.I
-    else:
-        frame.pict_type = av.video.frame.PictureType.NONE
+    if not force_keyframe and hasattr(self, "frame_count") and self.frame_count % 60 == 0:
+        force_keyframe = True
+    
+    self.frame_count = self.frame_count + 1 if hasattr(self, "frame_count") else 1
+    frame.pict_type = av.video.frame.PictureType.I if force_keyframe else av.video.frame.PictureType.NONE
 
     try:
         for packet in self.codec.encode(frame):
@@ -102,12 +78,8 @@ def nvenc_encode_frame(self, frame: av.VideoFrame, force_keyframe: bool):
     except Exception as e:
         logger_mp.warning(f"[H264 Patch] Encode error: {e}")
 
-logger_mp.info("[System] Applying H264 NVENC Monkey Patch to aiortc...")
-h264.H264Encoder._encode_frame = nvenc_encode_frame
+h264.H264Encoder._encode_frame = jetson_software_encode_frame
 
-# ========================================================
-# Embed HTML and JS directly
-# ========================================================
 # ========================================================
 # Embed HTML and JS directly
 # ========================================================
@@ -380,27 +352,24 @@ class WebRTC_PublisherThread(threading.Thread):
             try:
                 relayed_track = self._relay.subscribe(self._bgr_track)
                 transceiver = pc.addTransceiver(relayed_track, direction="sendonly")
-                
-                if self._codec_pref:
-                    capabilities = RTCRtpSender.getCapabilities("video")
-                    pref = self._codec_pref.lower()
-                    
-                    if pref == "h264":
-                        codecs = [c for c in capabilities.codecs if c.mimeType == "video/H264"]
-                        if codecs: 
-                            transceiver.setCodecPreferences(codecs)
-                            logger_mp.info(f"Applied H264 codec preference for WebRTC Publisher on:{self._port}")
-                            
-                    elif pref == "vp8":
-                        codecs = [c for c in capabilities.codecs if c.mimeType == "video/VP8"]
-                        if codecs: 
-                            transceiver.setCodecPreferences(codecs)
-                            logger_mp.info(f"Applied VP8 codec preference for WebRTC Publisher on:{self._port}")
-                            
+                capabilities = RTCRtpSender.getCapabilities("video")
+                pref = (self._codec_pref or "h264").lower()
+
+                if pref == "h264":
+                    h264_codecs = [c for c in capabilities.codecs if c.mimeType == "video/H264"]
+                    if h264_codecs:
+                        transceiver.setCodecPreferences(h264_codecs)
+                        logger_mp.info(f"[WebRTC] Preferred H264 (Constrained Baseline) for port:{self._port}")
                     else:
-                        logger_mp.warning(f"Unknown codec preference: {pref}. Using auto-negotiation on:{self._port}")
-                else:
-                    logger_mp.info(f"No codec preference set. Using auto-negotiation on:{self._port}")
+                        logger_mp.warning(f"[WebRTC] H264 preferred but not found, using auto-negotiation for port:{self._port}")
+                        
+                elif pref == "vp8":
+                    vp8_codecs = [c for c in capabilities.codecs if c.mimeType == "video/VP8"]
+                    if vp8_codecs:
+                        transceiver.setCodecPreferences(vp8_codecs)
+                        logger_mp.info(f"[WebRTC] Preferred VP8 for port:{self._port}")
+                    else:
+                        logger_mp.warning(f"[WebRTC] VP8 preferred but not found, using auto-negotiation for port:{self._port}")
                     
             except Exception as e:
                 logger_mp.error(f"Relay subscription failed: {e}")

@@ -14,7 +14,7 @@ head_camera:
   enable_webrtc: true
   # Port for WebRTC signaling server
   webrtc_port : 60001
-  # webrtc codec preference, options: "vp8", "h264", null (auto-negotiation)
+  # webrtc codec preference, options: "vp8", "h264"
   webrtc_codec: h264
 
   # Type of camera:
@@ -28,7 +28,7 @@ head_camera:
   image_shape: [480, 1280]
   binocular: true
   # frame per second
-  fps: 60
+  fps: 30
 
   # Camera identifiers (choose one or more):
   #   - video_id: X        → /dev/videoX  (e.g. 0 → /dev/video0)
@@ -59,7 +59,7 @@ left_wrist_camera:
   type: uvc
   image_shape: [480, 640]
   binocular: false
-  fps: 60
+  fps: 30
   video_id: 2
   serial_number: 200901010001
   physical_path: null
@@ -76,7 +76,7 @@ right_wrist_camera:
   type: uvc
   image_shape: [480, 640]
   binocular: false
-  fps: 60
+  fps: 30
   video_id: 4
   serial_number: 200901010002
   physical_path: null
