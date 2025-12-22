@@ -14,6 +14,8 @@ head_camera:
   enable_webrtc: true
   # Port for WebRTC signaling server
   webrtc_port : 60001
+  # webrtc codec preference, options: "vp8", "h264", null (auto-negotiation)
+  webrtc_codec: h264
 
   # Type of camera:
   #   - "opencv"    → opencv driver
@@ -51,8 +53,9 @@ head_camera:
 left_wrist_camera:
   enable_zmq: true
   zmq_port : 55556
-  enable_webrtc: false
+  enable_webrtc: true
   webrtc_port : 60002
+  webrtc_codec: h264
   type: uvc
   image_shape: [480, 640]
   binocular: false
@@ -67,8 +70,9 @@ left_wrist_camera:
 right_wrist_camera:
   enable_zmq: true
   zmq_port : 55557
-  enable_webrtc: false
+  enable_webrtc: true
   webrtc_port: 60003
+  webrtc_codec: h264
   type: uvc
   image_shape: [480, 640]
   binocular: false

@@ -315,7 +315,7 @@ class CameraFinder:
 
 class BaseCamera:
     def __init__(self, cam_topic, img_shape, fps, 
-                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666):
+                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None):
         self._ready = threading.Event()
         self._cam_topic = cam_topic
         self._img_shape = img_shape # (H, W)
@@ -329,6 +329,7 @@ class BaseCamera:
 
         self._enable_webrtc = enable_webrtc
         self._webrtc_port = webrtc_port
+        self._webrtc_codec = webrtc_codec
         if self._enable_webrtc:
             self._webrtc_buffer = webrtc_msg.TripleRingBuffer()
         else:
@@ -374,6 +375,10 @@ class BaseCamera:
     def get_webrtc_port(self):
         """Return the webrtc port number the camera is serving on."""
         return self._webrtc_port
+    
+    def get_webrtc_codec(self):
+        """Return the webrtc codec setting."""
+        return self._webrtc_codec
 
     def get_fps(self):
         """Return the camera FPS setting."""
@@ -385,9 +390,9 @@ class BaseCamera:
 
 class RealSenseCamera(BaseCamera):
     def __init__(self, cam_topic, serial_number, img_shape, fps, 
-                 enable_zmq=True, zmq_port = 55555, enable_webrtc=False, webrtc_port=66666, enable_depth=False):
+                 enable_zmq=True, zmq_port = 55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None, enable_depth=False):
         rs = self.check_pyrealsense2_install()
-        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
         self._serial_number = serial_number
         self._enable_depth = enable_depth
         self._latest_depth = None
@@ -484,8 +489,8 @@ class RealSenseCamera(BaseCamera):
 
 class UVCCamera(BaseCamera):
     def __init__(self, cam_topic, uid, img_shape, fps, 
-                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666):
-        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None):
+        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
         self.uid = uid
         self.cap = None
         try:
@@ -517,7 +522,7 @@ class UVCCamera(BaseCamera):
 
     def _update_frame(self):
         if self.cap is not None:
-            frame = self.cap.get_frame(timeout=50) # get_frame_robust()
+            frame = self.cap.get_frame_robust() # get_frame(timeout=500)
             if frame is not None:
                 if self._enable_zmq:
                     if frame.jpeg_buffer is not None:
@@ -547,8 +552,8 @@ class UVCCamera(BaseCamera):
 
 class OpenCVCamera(BaseCamera):
     def __init__(self, cam_topic, video_path, img_shape, fps, 
-                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666):
-        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+                 enable_zmq=True, zmq_port=55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None):
+        super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
         self._video_path = video_path
 
         self.cap = cv2.VideoCapture(self._video_path, cv2.CAP_V4L2)
@@ -623,6 +628,7 @@ class ImageServer:
                 zmq_port = cam_cfg.get("zmq_port", None)
                 enable_webrtc = cam_cfg.get("enable_webrtc", False)
                 webrtc_port = cam_cfg.get("webrtc_port", None)
+                webrtc_codec = cam_cfg.get("webrtc_codec", None)
                 cam_type = cam_cfg.get("type", "uvc").lower()
                 img_shape = cam_cfg.get("image_shape", None)
                 fps = cam_cfg.get("fps", 30)
@@ -639,7 +645,7 @@ class ImageServer:
                             logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with physical path {physical_path}")
                         else:
                             self._cameras[cam_topic] = OpenCVCamera(cam_topic, vpath, img_shape, fps, 
-                                                                    enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+                                                                    enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
                             continue
 
                     if serial_number is not None:
@@ -649,7 +655,7 @@ class ImageServer:
                             logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with serial number {serial_number}")
                         else:
                             self._cameras[cam_topic] = OpenCVCamera(cam_topic, vpath, img_shape, fps, 
-                                                                    enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+                                                                    enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
                         # once you specify either `physical_path` or `serial_number`, the system will no longer fall back to searching by `video_id`.
                         # ——— even if no camera matches the given path/serial.
                         continue
@@ -659,7 +665,7 @@ class ImageServer:
                         logger_mp.error(f"[Image Server] Cannot find OpenCVCamera for {cam_topic} with video_id {video_id}")
                     else:
                         self._cameras[cam_topic] = OpenCVCamera(cam_topic, video_path, img_shape, fps,
-                                                                enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+                                                                enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
                         
 
                 elif cam_type == "realsense":
@@ -671,7 +677,7 @@ class ImageServer:
                         logger_mp.error(f"[Image Server] Cannot find RealSenseCamera for {cam_topic}")
                     else:
                         self._cameras[cam_topic] = RealSenseCamera(cam_topic, serial_number, img_shape, fps,
-                                                                   enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+                                                                   enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
 
                 elif cam_type == "uvc":
                     uid = None
@@ -682,7 +688,7 @@ class ImageServer:
                             logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with physical path {physical_path}")
                         else:
                             self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps, 
-                                                                 enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+                                                                 enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
                             continue
 
                     if serial_number is not None:
@@ -692,7 +698,7 @@ class ImageServer:
                             logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with serial number {serial_number}")
                         else:
                             self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps, 
-                                                                 enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+                                                                 enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
                         # once you specify either `physical_path` or `serial_number`, the system will no longer fall back to searching by `video_id`.
                         # ——— even if no camera matches the given path/serial.
                         continue
@@ -708,7 +714,7 @@ class ImageServer:
                                 logger_mp.error(f"[Image Server] Cannot find UVCCamera for {cam_topic} with uid from video_id {video_id}")
                             else:
                                 self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps, 
-                                                                     enable_zmq, zmq_port, enable_webrtc, webrtc_port)
+                                                                     enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
                 else:
                     logger_mp.error(f"[Image Server] Unknown camera type {cam_type} for {cam_topic}, skipping...")
                     continue
@@ -767,12 +773,13 @@ class ImageServer:
     def _webrtc_pub(self, cam_topic: str, camera: BaseCamera):
         try:
             interval = 1.0 / camera.get_fps()
+            webrtc_codec = camera.get_webrtc_codec()
             next_frame_time = time.monotonic()
             while not self._stop_event.is_set():
                 bgr_frame = camera.get_bgr_frame()
 
                 if bgr_frame is not None:
-                    self._webrtc_publisher_manager.publish(bgr_frame, camera.get_webrtc_port())
+                    self._webrtc_publisher_manager.publish(bgr_frame, camera.get_webrtc_port(), codec_pref=webrtc_codec)
                 else:
                     logger_mp.info(f"[Image Server] {cam_topic} returned no frame.")
                     self._stop_event.set()
