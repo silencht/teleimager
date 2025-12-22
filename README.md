@@ -332,7 +332,7 @@ Different scenarios (local, LAN, remote) require different latency and bandwidth
 🎯 Advantages
 
 - Low latency with adaptive bitrate
-- VP8/H.264 encoding saves bandwidth（H.264  TODO）
+- H.264(default) / VP8
 - Browser and VR device compatible
 
 ------
