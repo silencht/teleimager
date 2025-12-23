@@ -60,9 +60,12 @@ unitree@ubuntu:~$ source ~/miniconda3/bin/activate
 
 ```
 (teleimager) unitree@ubuntu:~$ sudo apt install -y libusb-1.0-0-dev libturbojpeg-dev
-(teleimager) unitree@ubuntu:~$ git clone https://github.com/silencht/teleimager.git
+(teleimager) unitree@ubuntu:~$ git clone https://github.com/unitreerobotics/teleimager.git
 (teleimager) unitree@ubuntu:~$ cd teleimager
+# 假如您只使用客户端
 (teleimager) unitree@ubuntu:~/teleimager$ pip install -e .
+# 假如您还使用服务端
+(teleimager) unitree@ubuntu:~/teleimager$ pip install -e ".[server]"
 ```
 
 4. 添加 video 权限（非 root 用户运行）：
@@ -72,7 +75,7 @@ bash setup_uvc.sh
 ```
 
 5. 配置证书路径（WebRTC 模式需要）
-    证书通常由 [televuer](https://github.com/silencht/televuer) 仓库生成。
+    证书通常由 [televuer](https://github.com/unitreerobotics/televuer) 仓库生成。
 
    你可以通过 **用户配置目录** 或 **环境变量** 两种方式指定证书路径。
 
@@ -253,7 +256,7 @@ bash setup_autostart.sh
 
 
 
-## 4. 🧐 FAQ
+## 4. 🧠 设计原理
 
 
 
@@ -393,8 +396,18 @@ bash setup_autostart.sh
   三重缓冲允许**丢帧**。如果写入太快，旧的帧会被覆盖，读取者永远拿到的是 `latest_index` 指向的那一帧。这对实时性至关重要。
 
 
+## 5. 🧐 FAQ
 
-# 5. 🙏 Acknowledgement
+1. 为什么 teleimager-server --cf 输出的信息中序列号等内容为 unknown？
+
+    您可以尝试添加 `sudo` 权限运行该命令，某些摄像头需要更高权限才能读取完整信息。
+    例如：
+
+    ```bash
+    sudo $(which teleimager-server) --cf
+    ```
+
+## 6. 🙏 Acknowledgement
 
 
 
